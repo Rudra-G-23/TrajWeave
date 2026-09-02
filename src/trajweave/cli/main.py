@@ -89,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_show.add_argument("--json", action="store_true")
     p_show.set_defaults(func=cmd_show)
 
+    p_ui = sub.add_parser("ui", help="launch the local, read-only trajectory explorer")
+    p_ui.add_argument(
+        "--port", type=int, default=None,
+        help="port to bind on 127.0.0.1 (default: 8765, auto-advances if taken)",
+    )
+    p_ui.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    p_ui.set_defaults(func=cmd_ui)
+
     return parser
 
 
@@ -282,6 +290,20 @@ def cmd_show(args: argparse.Namespace) -> int:
     if len(events) > args.events:
         print(f"    ... {len(events) - args.events} more")
     return 0
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    from trajweave.ui.server import serve
+
+    paths = get_paths(args.home).ensure()
+    port = args.port if args.port is not None else 8765
+    return serve(
+        paths.db_path,
+        port=port,
+        explicit_port=args.port is not None,
+        open_browser=not args.no_browser,
+        verbose=args.verbose,
+    )
 
 
 # ----------------------------------------------------------------------

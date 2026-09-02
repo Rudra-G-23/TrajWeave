@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TrajWeave</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="TrajWeave home">TrajWeave</a>
+    <nav class="nav" aria-label="Primary">
+      <a href="#/" data-nav="projects">Projects</a>
+      <a href="#/sessions" data-nav="sessions">Sessions</a>
+    </nav>
+  </header>
+
+  <main id="view" class="view" aria-live="polite">
+    <p class="muted">Loading&#8230;</p>
+  </main>
+
+  <footer class="footer">
+    <span id="meta-line" class="muted"></span>
+    <a href="#/debug" class="muted">Import ledger</a>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

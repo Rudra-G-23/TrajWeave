@@ -24,6 +24,13 @@ from trajweave.normalization.commands import classify_command, command_event_fam
         ("ls -la", CommandKind.LIST),
         ("echo hello", CommandKind.OTHER),
         ("", CommandKind.OTHER),
+        # Stage 4 regressions: a tool merely mentioned is not a run of it.
+        ("which pytest", CommandKind.OTHER),
+        ("python3 -m pytest --version", CommandKind.OTHER),
+        ('echo "=== python / pytest ==="', CommandKind.OTHER),
+        ("ls .pytest_cache/", CommandKind.LIST),
+        ('git commit -m "make the build pass"', CommandKind.VCS),
+        ("cd app && FOO=1 pytest -q", CommandKind.TEST),
     ],
 )
 def test_classify_command(cmd, expected):

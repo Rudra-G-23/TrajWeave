@@ -33,6 +33,8 @@ Homepage = "https://github.com/Rudra-G-23/TrajWeave"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trajweave"]
+# The Stage 4 UI assets (src/trajweave/ui/static/*.{html,css,js}) are picked up
+# automatically as package data by the `packages` entry above.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
