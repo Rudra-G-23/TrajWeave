@@ -1,0 +1,7 @@
+{"timestamp": "2026-09-01T10:00:00.000Z", "ordinal": 0, "type": "session_meta", "payload": {"session_id": "beefbeef-0000-1111-2222-333344445555", "cwd": "/work/repo-a", "cli_version": "0.149.0"}}
+this line is not valid json at all
+{"timestamp": "2026-09-01T10:00:01.000Z", "ordinal": 1, "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "do the thing"}]}}}
+{"timestamp": "2026-09-01T10:00:02.000Z", "ordinal": 2, "type": "totally_unknown_record", "payload": {"weird": true}}
+{"timestamp": "2026-09-01T10:00:03.000Z", "ordinal": 3, "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "BrandNewItemType", "id": "x1", "mystery": 42}}}
+{"timestamp": "2026-09-01T10:00:04.000Z", "ordinal": 4, "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "CommandExecution", "id": "c1", "command": ["/usr/bin/zsh", "-lc", "ruff check ."], "status": "completed", "exit_code": 0, "parsed_cmd": [{"type": "unknown"}]}}}
+{"timestamp": "2026-09-01T10:00:05.000Z", "ordinal": 5, "type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}}
