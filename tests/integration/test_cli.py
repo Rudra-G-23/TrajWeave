@@ -75,3 +75,63 @@ def test_import_respects_codex_root_env(tmp_path, monkeypatch, capsys):
     code, out = _run(capsys, "import", "--all")
     assert code == 0
     assert "Codex sessions discovered: 0" in out
+
+
+# ----------------------------------------------------------------------
+# trajweave ui
+# ----------------------------------------------------------------------
+def test_ui_command_wires_args(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAJWEAVE_HOME", str(tmp_path / "h"))
+    captured = {}
+
+    def fake_serve(db_path, **kwargs):
+        captured["db_path"] = db_path
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("trajweave.ui.server.serve", fake_serve)
+
+    assert main(["ui", "--no-browser"]) == 0
+    assert captured["open_browser"] is False
+    assert captured["explicit_port"] is False
+    assert captured["port"] == 8765
+    assert str(captured["db_path"]).endswith("trajweave.db")
+
+    captured.clear()
+    assert main(["ui", "--port", "9123"]) == 0
+    assert captured["port"] == 9123
+    assert captured["explicit_port"] is True
+    assert captured["open_browser"] is True
+
+
+def test_ui_auto_advances_when_default_port_busy(monkeypatch, tmp_path, capsys):
+    from trajweave.ui import server as srv
+
+    busy = srv.make_server(tmp_path / "x.db", port=0)
+    port = busy.server_address[1]
+    monkeypatch.setattr(srv._Server, "serve_forever", lambda self: None)
+    try:
+        rc = srv.serve(
+            tmp_path / "x.db", port=port, explicit_port=False, open_browser=False
+        )
+    finally:
+        busy.server_close()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert f"127.0.0.1:{port + 1}" in out
+
+
+def test_ui_explicit_busy_port_is_hard_error(monkeypatch, tmp_path, capsys):
+    from trajweave.ui import server as srv
+
+    busy = srv.make_server(tmp_path / "x.db", port=0)
+    port = busy.server_address[1]
+    try:
+        rc = srv.serve(
+            tmp_path / "x.db", port=port, explicit_port=True, open_browser=False
+        )
+    finally:
+        busy.server_close()
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "not available" in out

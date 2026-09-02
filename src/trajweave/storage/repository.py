@@ -321,6 +321,139 @@ class Repository:
             "events": one("SELECT COUNT(*) FROM trajectory_events"),
         }
 
+    # ------------------------------------------------------------------
+    # read side (UI) - aggregates + filtered/paginated listing
+    # ------------------------------------------------------------------
+    def list_project_summaries(self) -> list[Any]:
+        """One row per project with its trajectory aggregates.
+
+        Projects with no imported trajectories are still returned (LEFT JOIN),
+        so a freshly ``init``-ed but not-yet-imported repo is visible.
+        """
+
+        return self.db.query(
+            "SELECT p.id, p.name, p.root, p.git_remote, p.status, p.enabled, "
+            "       p.created_at, p.last_seen_at, "
+            "       COUNT(t.id)                                        AS total_sessions, "
+            "       COALESCE(SUM(t.agent = 'codex'), 0)                AS codex_count, "
+            "       COALESCE(SUM(t.agent = 'claude'), 0)               AS claude_count, "
+            "       MAX(t.started_at)                                  AS last_activity "
+            "FROM projects p "
+            "LEFT JOIN trajectories t ON t.project_id = p.id "
+            "GROUP BY p.id "
+            "ORDER BY p.name COLLATE NOCASE"
+        )
+
+    def get_project_summary(self, project_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT p.id, p.name, p.root, p.git_remote, p.status, p.enabled, "
+            "       p.created_at, p.last_seen_at, "
+            "       COUNT(t.id)                                        AS total_sessions, "
+            "       COALESCE(SUM(t.agent = 'codex'), 0)                AS codex_count, "
+            "       COALESCE(SUM(t.agent = 'claude'), 0)               AS claude_count, "
+            "       MAX(t.started_at)                                  AS last_activity "
+            "FROM projects p "
+            "LEFT JOIN trajectories t ON t.project_id = p.id "
+            "WHERE p.id = ? "
+            "GROUP BY p.id",
+            (project_id,),
+        )
+
+    _SESSION_COLUMNS = (
+        "t.id, t.agent, t.task, t.task_source, t.final_status, t.final_status_reason, "
+        "t.started_at, t.ended_at, t.event_count, t.model, t.project_id, "
+        "p.name AS project_name, "
+        "ss.source_path AS source_path, "
+        "CASE WHEN ss.source_path LIKE '%/subagents/%' THEN 1 ELSE 0 END AS is_subagent"
+    )
+
+    def _session_where(
+        self,
+        *,
+        project_id: str | None,
+        agent: str | None,
+        status: str | None,
+        query: str | None,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if project_id:
+            clauses.append("t.project_id = ?")
+            params.append(project_id)
+        if agent:
+            clauses.append("t.agent = ?")
+            params.append(agent)
+        if status:
+            clauses.append("t.final_status = ?")
+            params.append(status)
+        if query:
+            like = f"%{query.strip()}%"
+            clauses.append("(t.task LIKE ? OR t.id LIKE ?)")
+            params.extend((like, like))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
+    def list_sessions_page(
+        self,
+        *,
+        project_id: str | None = None,
+        agent: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Any], int]:
+        """Return ``(rows, total)`` for the Sessions list, newest first."""
+
+        where, params = self._session_where(
+            project_id=project_id, agent=agent, status=status, query=query
+        )
+        total_row = self.db.query_one(
+            f"SELECT COUNT(*) AS n FROM trajectories t "
+            f"LEFT JOIN source_sessions ss ON ss.id = t.source_session_pk{where}",
+            tuple(params),
+        )
+        total = int(total_row["n"]) if total_row else 0
+
+        rows = self.db.query(
+            f"SELECT {self._SESSION_COLUMNS} FROM trajectories t "
+            f"LEFT JOIN projects p ON p.id = t.project_id "
+            f"LEFT JOIN source_sessions ss ON ss.id = t.source_session_pk"
+            f"{where} ORDER BY t.seq DESC LIMIT ? OFFSET ?",
+            (*params, max(1, int(limit)), max(0, int(offset))),
+        )
+        return rows, total
+
+    def get_trajectory_detail(self, trajectory_id: str) -> Any:
+        """Full trajectory row plus source-session provenance (for the UI)."""
+
+        return self.db.query_one(
+            "SELECT t.*, p.name AS project_name, p.status AS project_status, "
+            "       ss.source_path AS source_path, "
+            "       ss.source_session_id AS source_session_id, "
+            "       ss.source_mtime AS source_mtime, "
+            "       ss.cwd AS source_cwd, "
+            "       CASE WHEN ss.source_path LIKE '%/subagents/%' THEN 1 ELSE 0 END AS is_subagent "
+            "FROM trajectories t "
+            "LEFT JOIN projects p ON p.id = t.project_id "
+            "LEFT JOIN source_sessions ss ON ss.id = t.source_session_pk "
+            "WHERE t.id = ?",
+            (trajectory_id,),
+        )
+
+    def distinct_filter_values(self) -> dict[str, list[str]]:
+        agents = [
+            r["agent"]
+            for r in self.db.query("SELECT DISTINCT agent FROM trajectories ORDER BY agent")
+        ]
+        statuses = [
+            r["final_status"]
+            for r in self.db.query(
+                "SELECT DISTINCT final_status FROM trajectories ORDER BY final_status"
+            )
+        ]
+        return {"agents": agents, "statuses": statuses}
+
 
 def rows_to_dicts(rows: Iterable[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
