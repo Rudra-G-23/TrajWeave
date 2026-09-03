@@ -719,6 +719,16 @@ class Repository:
                 "review_note = ?, updated_at = ? WHERE id = ?",
                 (review_status, _now(), note, _now(), experience_id),
             )
+            # Stage 6 only generates for candidate Experiences that have not
+            # been marked false-positive or needing more evidence.  A human
+            # triage change to either excluded state invalidates its derived
+            # placement set immediately; the FK cascade removes alternatives
+            # and their evidence links without touching Stage 5 evidence.
+            if review_status in {"false_positive", "needs_more_evidence"}:
+                self.db.execute(
+                    "DELETE FROM placement_proposal_sets WHERE experience_id = ?",
+                    (experience_id,),
+                )
         return True
 
     def experience_counts(self) -> dict[str, int]:
@@ -736,6 +746,317 @@ class Repository:
             "false_positives": one(
                 "SELECT COUNT(*) FROM experiences WHERE review_status = 'false_positive'"
             ),
+        }
+
+    # ------------------------------------------------------------------
+    # Stage 6 - deterministic placement proposals
+    # ------------------------------------------------------------------
+    def list_placement_eligible_experiences(self) -> list[Any]:
+        """Return only Stage 6-eligible Stage 5 Experiences.
+
+        The filter intentionally honours Stage 5 human triage.  It does not
+        reinterpret confidence or alter Stage 5 thresholds: an Experience is
+        eligible exactly when it is a candidate and has not been marked a false
+        positive or as needing more evidence.
+        """
+
+        return self.db.query(
+            "SELECT * FROM experiences "
+            "WHERE status = 'candidate' "
+            "AND review_status NOT IN ('false_positive', 'needs_more_evidence') "
+            "ORDER BY id"
+        )
+
+    def get_placement_evidence(self, experience_id: str) -> list[dict[str, Any]]:
+        """Return serializable Stage 5 evidence enriched for placement.
+
+        File paths and commands come from the underlying trajectory but are
+        scoped to the occurrence's event interval where possible.  The engine
+        is responsible for normalising/redacting them before proposal content
+        is generated.  Returning evidence as dictionaries keeps the placement
+        feature extractor independent of SQLite row objects.
+        """
+
+        rows = self.db.query(
+            "SELECT ev.relationship, o.id AS occurrence_id, o.trajectory_id, "
+            "       o.project_id, o.pattern_type, o.group_key, o.start_sequence, "
+            "       o.end_sequence, o.failure_family, o.resolution_family, "
+            "       o.repair_context, o.error_signature, o.features_json, "
+            "       o.classification, t.task AS task, t.agent AS agent, "
+            "       t.final_status AS final_status, t.repository_root, "
+            "       p.name AS project_name, p.root AS project_root "
+            "FROM experience_evidence ev "
+            "JOIN experience_occurrences o ON o.id = ev.occurrence_id "
+            "LEFT JOIN trajectories t ON t.id = o.trajectory_id "
+            "LEFT JOIN projects p ON p.id = o.project_id "
+            "WHERE ev.experience_id = ? "
+            "ORDER BY CASE ev.relationship WHEN 'support' THEN 0 "
+            "         WHEN 'ambiguous' THEN 1 ELSE 2 END, o.trajectory_id, o.id",
+            (experience_id,),
+        )
+        evidence: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            # Scope evidence must come from the occurrence interval itself.
+            # ``trajectory_files`` is a whole-session aggregate and would let
+            # an unrelated edit manufacture a directory or extension scope.
+            item["file_paths"] = [
+                r["path"]
+                for r in self.db.query(
+                    "SELECT path FROM trajectory_events "
+                    "WHERE trajectory_id = ? AND sequence BETWEEN ? AND ? "
+                    "AND path IS NOT NULL ORDER BY sequence, path",
+                    (row["trajectory_id"], row["start_sequence"], row["end_sequence"]),
+                )
+            ]
+            item["commands"] = [
+                r["command"]
+                for r in self.db.query(
+                    "SELECT command FROM trajectory_events "
+                    "WHERE trajectory_id = ? AND sequence BETWEEN ? AND ? "
+                    "AND command IS NOT NULL ORDER BY sequence",
+                    (row["trajectory_id"], row["start_sequence"], row["end_sequence"]),
+                )
+            ]
+            evidence.append(item)
+        return evidence
+
+    def record_placement_run(self, stats: dict[str, Any]) -> int:
+        """Persist one Stage 6 generation invocation and return its id."""
+
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO placement_runs("
+                "started_at, finished_at, generator_version, eligible_experiences, "
+                "proposal_sets_generated, runtime_seconds) "
+                "VALUES (:started_at, :finished_at, :generator_version, "
+                ":eligible_experiences, :proposal_sets_generated, :runtime_seconds)",
+                stats,
+            )
+            return int(cur.lastrowid)
+
+    def latest_placement_run(self) -> Any:
+        return self.db.query_one("SELECT * FROM placement_runs ORDER BY id DESC LIMIT 1")
+
+    def replace_placement_proposal_set(
+        self,
+        *,
+        experience_id: str,
+        source_fingerprint: str,
+        generator_version: str,
+        proposals: list[dict[str, Any]],
+        run_id: int | None = None,
+    ) -> str:
+        """Atomically replace the current alternatives for one Experience.
+
+        ``proposals`` is a serializable list with one item per placement type.
+        Each item must supply ``placement_type``, ``scope_type``,
+        ``proposed_content``, ``score``, ``rank``, ``feature_values``, and
+        ``diagnostics``.  Optional ``id`` defaults to the stable deterministic
+        ``PP-<experience id>-<placement type>``; ``scope_value``,
+        ``diagnostics_text``, and ``evidence`` (occurrence ids or
+        ``{occurrence_id, role}`` dictionaries) are also supported.  The
+        pure engine's ``features`` / ``evidence_occurrence_ids`` aliases are
+        accepted at this boundary as well.
+
+        There is one proposal set per Experience.  Replacing it deletes stale
+        alternatives and evidence links in the same transaction, preserving no
+        obsolete recommendation while retaining stable set/proposal ids for
+        unchanged placement types.
+        """
+
+        if self.get_experience(experience_id) is None:
+            raise ValueError(f"Unknown experience: {experience_id}")
+        if not source_fingerprint:
+            raise ValueError("source_fingerprint is required")
+        if not generator_version:
+            raise ValueError("generator_version is required")
+        if not proposals:
+            raise ValueError("at least one placement proposal is required")
+
+        set_id = f"PS-{experience_id}"
+        allowed_types = {"ignore", "global_rule", "project_rule", "scoped_rule", "skill"}
+        required = {
+            "placement_type", "scope_type", "proposed_content", "score", "rank",
+            "feature_values", "diagnostics",
+        }
+        seen_types: set[str] = set()
+        seen_ranks: set[int] = set()
+        seen_ids: set[str] = set()
+        prepared: list[dict[str, Any]] = []
+        for raw_proposal in proposals:
+            # The pure placement engine names these two fields after its own
+            # domain objects.  Accept those serializable aliases at the
+            # persistence boundary while storing the schema's explicit names.
+            proposal = dict(raw_proposal)
+            if "feature_values" not in proposal and "features" in proposal:
+                proposal["feature_values"] = proposal["features"]
+            if "evidence" not in proposal and "evidence_occurrence_ids" in proposal:
+                proposal["evidence"] = proposal["evidence_occurrence_ids"]
+            missing = required - proposal.keys()
+            if missing:
+                raise ValueError(f"placement proposal missing fields: {sorted(missing)}")
+            placement_type = str(proposal["placement_type"])
+            if placement_type not in allowed_types:
+                raise ValueError(f"invalid placement_type: {placement_type}")
+            rank = int(proposal["rank"])
+            if rank < 1:
+                raise ValueError("placement proposal rank must be positive")
+            if placement_type in seen_types or rank in seen_ranks:
+                raise ValueError("placement proposal types and ranks must be unique")
+            seen_types.add(placement_type)
+            seen_ranks.add(rank)
+            proposal_id = str(proposal.get("id") or f"PP-{experience_id}-{placement_type}")
+            if proposal_id in seen_ids:
+                raise ValueError("placement proposal ids must be unique")
+            seen_ids.add(proposal_id)
+            evidence = proposal.get("evidence", [])
+            prepared.append({
+                "id": proposal_id,
+                "placement_type": placement_type,
+                "scope_type": str(proposal["scope_type"]),
+                "scope_value": proposal.get("scope_value"),
+                "proposed_content": str(proposal["proposed_content"]),
+                "score": float(proposal["score"]),
+                "rank": rank,
+                "feature_values": proposal["feature_values"],
+                "diagnostics": proposal["diagnostics"],
+                "diagnostics_text": str(proposal.get("diagnostics_text", "")),
+                "evidence": evidence,
+            })
+
+        now = _now()
+        with self.db.transaction():
+            existing = self.db.query_one(
+                "SELECT id FROM placement_proposal_sets WHERE experience_id = ?",
+                (experience_id,),
+            )
+            if existing is None:
+                self.db.execute(
+                    "INSERT INTO placement_proposal_sets("
+                    "id, experience_id, source_fingerprint, generator_version, run_id, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (set_id, experience_id, source_fingerprint, generator_version, run_id, now, now),
+                )
+            else:
+                set_id = existing["id"]
+                self.db.execute(
+                    "UPDATE placement_proposal_sets SET source_fingerprint = ?, "
+                    "generator_version = ?, run_id = ?, updated_at = ? WHERE id = ?",
+                    (source_fingerprint, generator_version, run_id, now, set_id),
+                )
+                self.db.execute(
+                    "DELETE FROM placement_proposals WHERE proposal_set_id = ?", (set_id,)
+                )
+
+            for proposal in prepared:
+                self.db.execute(
+                    "INSERT INTO placement_proposals("
+                    "id, proposal_set_id, placement_type, scope_type, scope_value, "
+                    "proposed_content, score, rank, feature_values_json, diagnostics_json, "
+                    "diagnostics_text, generator_version, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        proposal["id"], set_id, proposal["placement_type"],
+                        proposal["scope_type"], proposal["scope_value"],
+                        proposal["proposed_content"], proposal["score"], proposal["rank"],
+                        _json(proposal["feature_values"]) or "{}",
+                        _json(proposal["diagnostics"]) or "[]",
+                        proposal["diagnostics_text"], generator_version, now,
+                    ),
+                )
+                for ref in proposal["evidence"]:
+                    if isinstance(ref, str):
+                        occurrence_id, role = ref, "evidence"
+                    elif isinstance(ref, dict) and ref.get("occurrence_id"):
+                        occurrence_id, role = str(ref["occurrence_id"]), str(ref.get("role", "evidence"))
+                    else:
+                        raise ValueError("proposal evidence must be an occurrence id or mapping")
+                    is_experience_evidence = self.db.query_one(
+                        "SELECT 1 FROM experience_evidence "
+                        "WHERE experience_id = ? AND occurrence_id = ?",
+                        (experience_id, occurrence_id),
+                    )
+                    if is_experience_evidence is None:
+                        raise ValueError(
+                            "proposal evidence must belong to its experience: "
+                            f"{occurrence_id}"
+                        )
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO placement_proposal_evidence("
+                        "proposal_id, occurrence_id, role) VALUES (?, ?, ?)",
+                        (proposal["id"], occurrence_id, role),
+                    )
+        return set_id
+
+    def get_placement_proposal_set(self, experience_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT ps.*, e.title AS experience_title, e.status AS experience_status, "
+            "e.review_status AS experience_review_status "
+            "FROM placement_proposal_sets ps JOIN experiences e ON e.id = ps.experience_id "
+            "WHERE ps.experience_id = ?",
+            (experience_id,),
+        )
+
+    def get_placement_proposals(self, experience_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT pp.*, ps.experience_id FROM placement_proposals pp "
+            "JOIN placement_proposal_sets ps ON ps.id = pp.proposal_set_id "
+            "WHERE ps.experience_id = ? ORDER BY pp.rank, pp.placement_type",
+            (experience_id,),
+        )
+
+    def get_placement_proposal_evidence(self, proposal_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT pe.role, o.id AS occurrence_id, o.trajectory_id, o.project_id, "
+            "o.classification, o.pattern_type, o.start_sequence, o.end_sequence, "
+            "o.features_json, p.name AS project_name, p.root AS project_root "
+            "FROM placement_proposal_evidence pe "
+            "JOIN experience_occurrences o ON o.id = pe.occurrence_id "
+            "LEFT JOIN projects p ON p.id = o.project_id "
+            "WHERE pe.proposal_id = ? ORDER BY o.trajectory_id, o.id",
+            (proposal_id,),
+        )
+
+    def list_placement_proposal_sets(
+        self, *, placement_type: str | None = None, recommended: str | None = None
+    ) -> list[Any]:
+        """List current sets with their rank-one recommendation for CLI/UI."""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if placement_type:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM placement_proposals typed "
+                "WHERE typed.proposal_set_id = ps.id AND typed.placement_type = ?)"
+            )
+            params.append(placement_type)
+        if recommended:
+            clauses.append("recommended.placement_type = ?")
+            params.append(recommended)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return self.db.query(
+            "SELECT ps.*, e.title AS experience_title, e.confidence AS experience_confidence, "
+            "recommended.id AS recommended_proposal_id, "
+            "recommended.placement_type AS recommended_type, "
+            "recommended.score AS recommended_score, recommended.scope_type AS recommended_scope_type, "
+            "recommended.scope_value AS recommended_scope_value "
+            "FROM placement_proposal_sets ps "
+            "JOIN experiences e ON e.id = ps.experience_id "
+            "JOIN placement_proposals recommended "
+            "ON recommended.proposal_set_id = ps.id AND recommended.rank = 1"
+            f"{where} ORDER BY recommended.score DESC, ps.experience_id",
+            tuple(params),
+        )
+
+    def placement_counts(self) -> dict[str, int]:
+        def one(sql: str) -> int:
+            row = self.db.query_one(sql)
+            return int(row[0]) if row else 0
+
+        return {
+            "proposal_sets": one("SELECT COUNT(*) FROM placement_proposal_sets"),
+            "proposals": one("SELECT COUNT(*) FROM placement_proposals"),
         }
 
 
