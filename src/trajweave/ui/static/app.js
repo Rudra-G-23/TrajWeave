@@ -156,7 +156,13 @@ async function render() {
       await viewSessions(view, params);
     } else if (path.startsWith("/session/")) {
       navSetActive("sessions");
-      await viewSession(view, decodeURIComponent(path.slice("/session/".length)));
+      await viewSession(view, decodeURIComponent(path.slice("/session/".length)), params);
+    } else if (path === "/experiences") {
+      navSetActive("experiences");
+      await viewExperiences(view, params);
+    } else if (path.startsWith("/experience/")) {
+      navSetActive("experiences");
+      await viewExperience(view, decodeURIComponent(path.slice("/experience/".length)));
     } else if (path === "/debug") {
       navSetActive(null);
       await viewDebug(view, params);
@@ -381,11 +387,18 @@ function gotoOffset(params, offset) {
 }
 
 /* ---------- session detail ------------------------------- */
-async function viewSession(view, id) {
+async function viewSession(view, id, params) {
   const data = await api("/api/trajectories/" + encodeURIComponent(id));
   const t = data.trajectory;
   const events = data.events || [];
   const files = data.files || [];
+
+  let hi = null;
+  const range = params && params.get("range");
+  if (range && /^\d+-\d+$/.test(range)) {
+    const [a, b] = range.split("-").map((n) => parseInt(n, 10));
+    hi = { lo: Math.min(a, b), hi: Math.max(a, b) };
+  }
 
   const head = el(
     "div",
@@ -418,7 +431,7 @@ async function viewSession(view, id) {
   const commandEvents = events.filter((e) => e.type === "command");
 
   const tabs = [
-    ["Timeline", () => renderTimeline(events)],
+    ["Timeline", () => renderTimeline(events, hi)],
     ["Files", () => renderFiles(files)],
     ["Commands", () => renderCommands(commandEvents)],
     ["Errors", () => renderErrors(errorEvents)],
@@ -460,16 +473,23 @@ function kv(k, v) {
 }
 
 /* ---- timeline ---- */
-function renderTimeline(events) {
+function renderTimeline(events, hi) {
   if (!events.length) return el("div", { class: "empty", text: "This session has no recorded events." });
 
   const repairAt = detectRepairs(events);
   const wrap = el("div", { class: "timeline" });
+  let firstHi = null;
 
   events.forEach((e, idx) => {
     if (repairAt.has(idx)) wrap.append(el("div", { class: "repair-note", text: repairAt.get(idx) }));
-    wrap.append(timelineRow(e));
+    const row = timelineRow(e);
+    if (hi && e.sequence >= hi.lo && e.sequence <= hi.hi) {
+      row.classList.add("tl-hi");
+      if (!firstHi) firstHi = row;
+    }
+    wrap.append(row);
   });
+  if (firstHi) setTimeout(() => firstHi.scrollIntoView({ block: "center" }), 0);
   return wrap;
 }
 
@@ -639,6 +659,212 @@ function renderMetadata(t) {
     blocks.push(el("pre", { class: "raw", text: t.parse_warnings.join("\n") }));
   }
   return el("div", {}, ...blocks);
+}
+
+/* ---------- experiences (Stage 5) ----------------------- */
+const PATTERN_LABEL = {
+  failure_repair_success: "failure -> repair -> success",
+  human_correction_repair: "human correction -> repair",
+  repeated_failure: "recurring unresolved failure",
+  file_change_pattern: "linked file-change pattern",
+};
+
+async function viewExperiences(view, params) {
+  const status = params.get("status") || "";
+  const qs = status ? "?status=" + encodeURIComponent(status) : "";
+  const data = await api("/api/experiences" + qs);
+  const rows = data.experiences || [];
+  const counts = data.counts || {};
+  const run = data.run || null;
+
+  const frag = [el("div", { class: "page-head" }, el("h1", { text: "Experiences" }))];
+  frag.push(
+    el("p", {
+      class: "muted",
+      text:
+        "Evidence-backed candidate patterns mined from the normalized trajectories. " +
+        "Candidates only - no rule is written anywhere.",
+    })
+  );
+
+  if (Object.keys(counts).length) {
+    frag.push(
+      el(
+        "p",
+        { class: "muted" },
+        `${counts.candidates || 0} candidates · ${counts.needs_more_evidence || 0} need more evidence · ` +
+          `${counts.occurrences || 0} occurrences · ${counts.false_positives || 0} marked false-positive` +
+          (run ? ` · last run analyzed ${run.trajectories_analyzed}/${run.trajectories_considered} trajectories` : "")
+      )
+    );
+  }
+
+  const setStatus = (v) => {
+    location.hash = "#/experiences" + (v ? "?status=" + encodeURIComponent(v) : "");
+  };
+  const statusSel = el(
+    "select",
+    { "aria-label": "Filter by status", onchange: (e) => setStatus(e.target.value) },
+    ...["", "candidate", "needs_more_evidence", "rejected", "archived"].map((s) =>
+      el("option", { value: s, text: s || "All statuses", selected: status === s })
+    )
+  );
+  frag.push(el("div", { class: "filters" }, statusSel));
+
+  if (!rows.length) {
+    frag.push(
+      el(
+        "div",
+        { class: "empty" },
+        el("p", { text: "No experiences extracted yet." }),
+        el("p", {}, "Run ", el("code", { text: "trajweave experiences extract" }))
+      )
+    );
+    view.replaceChildren(...frag);
+    return;
+  }
+
+  const tbody = el("tbody");
+  for (const e of rows) {
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { class: "id-cell" }, el("a", { href: `#/experience/${e.id}` }, e.id)),
+        el("td", { class: "task" }, e.title || "(untitled)",
+          e.review_status && e.review_status !== "unreviewed"
+            ? el("span", { class: "tag", text: e.review_status.replace("_", " ") })
+            : null),
+        el("td", { class: "muted", text: PATTERN_LABEL[e.pattern_type] || e.pattern_type }),
+        el("td", {}, confPill(e.confidence)),
+        el("td", { text: String(e.occurrence_count) }),
+        el("td", { text: `${e.support_count}/${e.contradiction_count}` }),
+        el("td", { text: String(e.project_count) }),
+        el("td", {}, statusTag(e.status)),
+        el("td", { class: "mono", text: e.last_seen_at ? relTime(e.last_seen_at) : "-" })
+      )
+    );
+  }
+  frag.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          ...["Experience", "Title", "Pattern", "Confidence", "Occ", "Sup/Con", "Proj", "Status", "Last seen"].map(
+            (h) => el("th", { text: h })
+          )
+        )
+      ),
+      tbody
+    )
+  );
+  view.replaceChildren(...frag);
+}
+
+function confPill(v) {
+  const n = Number(v || 0);
+  const cls = n >= 0.75 ? "st-success" : n >= 0.5 ? "st-partial" : "st-unknown";
+  return el("span", { class: "pill " + cls, text: n.toFixed(2) });
+}
+function statusTag(status) {
+  return el("span", { class: "pill st-" + (status === "candidate" ? "success" : "unknown"), text: status });
+}
+
+async function viewExperience(view, id) {
+  const data = await api("/api/experiences/" + encodeURIComponent(id));
+  const e = data.experience;
+  const evidence = data.evidence || [];
+  const cb = e.confidence_breakdown || {};
+  const comp = cb.components || {};
+
+  const frag = [
+    el("p", { class: "crumbs" }, el("a", { href: "#/experiences" }, "Experiences"), " / ", e.id),
+    el(
+      "div",
+      { class: "detail-head" },
+      el("div", {}, el("span", { class: "id-cell mono", text: e.id }), "  ", statusTag(e.status),
+        e.review_status && e.review_status !== "unreviewed"
+          ? el("span", { class: "tag", text: e.review_status.replace("_", " ") })
+          : null),
+      el("div", { class: "dh-title", text: e.title || "(untitled)" }),
+      el(
+        "dl",
+        { class: "kv" },
+        kv("Pattern", PATTERN_LABEL[e.pattern_type] || e.pattern_type),
+        kv("Confidence", Number(e.confidence).toFixed(2)),
+        kv("Occurrences", String(e.occurrence_count)),
+        kv("Supporting", String(e.support_count)),
+        kv("Contradicting", String(e.contradiction_count)),
+        kv("Ambiguous", String(e.ambiguous_count)),
+        kv("Projects", String(e.project_count)),
+        kv("First seen", fmtDate(e.first_seen_at)),
+        kv("Last seen", fmtDate(e.last_seen_at)),
+        e.context && e.context.length ? kv("Context", e.context.join(", ")) : null
+      )
+    ),
+  ];
+
+  frag.push(el("h2", { text: "Pattern" }));
+  frag.push(el("p", {}, e.summary || "-"));
+  frag.push(el("h2", { text: "Candidate reusable lesson" }));
+  frag.push(el("p", {}, e.reusable_lesson || "-"));
+
+  frag.push(el("h2", { text: "Confidence" }));
+  const ct = el("tbody");
+  const addRow = (k, v) => ct.append(el("tr", {}, el("td", { text: k }), el("td", { class: "mono", text: v })));
+  addRow("Support ratio", `${e.support_count} / ${e.support_count + e.contradiction_count}` +
+    (comp.support_ratio != null ? `  (${comp.support_ratio})` : ""));
+  addRow("Recurrence", `${e.occurrence_count} occurrences` + (comp.recurrence != null ? `  (${comp.recurrence})` : ""));
+  addRow("Cross-project", `${e.project_count} project(s)` + (comp.cross_project != null ? `  (${comp.cross_project})` : ""));
+  addRow("Recency", comp.recency != null ? String(comp.recency) : "-");
+  addRow("Score", Number(e.confidence).toFixed(2) + "  =  0.50·ratio + 0.25·recurrence + 0.15·cross-project + 0.10·recency");
+  frag.push(el("table", { class: "tbl" }, ct));
+
+  if (e.review_note) {
+    frag.push(el("h2", { text: "Review note" }));
+    frag.push(el("p", { class: "muted" }, e.review_note));
+  }
+
+  frag.push(el("h2", { text: `Evidence (${evidence.length})` }));
+  frag.push(
+    el("p", { class: "muted", text: "Every experience traces back to real trajectories. Click one to open the session at the relevant events." })
+  );
+  const tbody = el("tbody");
+  for (const ev of evidence) {
+    const range = ev.start_sequence && ev.end_sequence ? `?range=${ev.start_sequence}-${ev.end_sequence}` : "";
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { class: "id-cell" }, el("a", { href: `#/session/${ev.trajectory_id}${range}` }, ev.trajectory_id)),
+        el("td", {}, el("span", { class: "pill st-" + relClass(ev.relationship), text: ev.relationship })),
+        el("td", { class: "muted", text: PATTERN_LABEL[ev.pattern_type] || ev.pattern_type }),
+        el("td", { text: ev.start_sequence === ev.end_sequence ? `seq ${ev.start_sequence}` : `seq ${ev.start_sequence}-${ev.end_sequence}` }),
+        el("td", { class: "task", text: truncate(ev.task || "-", 90) }),
+        el("td", { class: "muted", text: ev.project_name || "-" })
+      )
+    );
+  }
+  frag.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el("thead", {}, el("tr", {}, ...["Session", "Relationship", "Pattern", "Events", "Task", "Project"].map((h) => el("th", { text: h })))),
+      tbody
+    )
+  );
+
+  view.replaceChildren(...frag);
+}
+function relClass(rel) {
+  if (rel === "support") return "success";
+  if (rel === "contradiction") return "failure";
+  return "partial";
 }
 
 /* ---------- import ledger (debug) ----------------------- */

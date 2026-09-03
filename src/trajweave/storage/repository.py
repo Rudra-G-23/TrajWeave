@@ -454,6 +454,290 @@ class Repository:
         ]
         return {"agents": agents, "statuses": statuses}
 
+    # ------------------------------------------------------------------
+    # Stage 5 - experience extraction
+    # ------------------------------------------------------------------
+    def list_trajectories_for_extraction(
+        self, project_id: str | None = None
+    ) -> list[Any]:
+        where = " WHERE t.project_id = ?" if project_id else ""
+        params = (project_id,) if project_id else ()
+        return self.db.query(
+            "SELECT t.id, t.project_id, t.agent, t.final_status, "
+            "       t.started_at, t.ended_at, ss.source_hash AS source_hash "
+            "FROM trajectories t "
+            "LEFT JOIN source_sessions ss ON ss.id = t.source_session_pk"
+            f"{where} ORDER BY t.seq",
+            params,
+        )
+
+    def experience_extraction_state(self) -> dict[str, str | None]:
+        return {
+            r["trajectory_id"]: r["source_hash"]
+            for r in self.db.query(
+                "SELECT trajectory_id, source_hash FROM experience_extraction_state"
+            )
+        }
+
+    def set_extraction_state(self, trajectory_id: str, source_hash: str | None) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO experience_extraction_state(trajectory_id, source_hash, extracted_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(trajectory_id) DO UPDATE SET source_hash = excluded.source_hash, "
+                "extracted_at = excluded.extracted_at",
+                (trajectory_id, source_hash, _now()),
+            )
+
+    def clear_experience_data(self) -> None:
+        """Wipe occurrences + incremental state so ``--rebuild`` reprocesses every
+        trajectory. ``experiences`` rows are left for :meth:`rebuild_experiences`
+        to replace in place - that preserves human review annotations across a
+        rebuild (they are keyed by ``group_key``)."""
+
+        with self.db.transaction():
+            for table in (
+                "experience_evidence",
+                "experience_occurrences",
+                "experience_extraction_state",
+            ):
+                self.db.execute(f"DELETE FROM {table}")
+
+    def _alloc_occurrence_id(self, prefix: str) -> int:
+        row = self.db.query_one(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(id, ?) AS INTEGER)), 0) AS m "
+            "FROM experience_occurrences WHERE id LIKE ?",
+            (len(prefix) + 1, f"{prefix}%"),
+        )
+        return int(row["m"]) + 1
+
+    def replace_trajectory_occurrences(
+        self, trajectory_id: str, occurrences: list[Any]
+    ) -> None:
+        """Delete this trajectory's real occurrences and insert the new set.
+
+        Synthesized contradiction occurrences (prefix ``OC-``) are owned by the
+        experience rebuild step, not this one, so they are left alone here.
+        """
+
+        with self.db.transaction():
+            self.db.execute(
+                "DELETE FROM experience_occurrences "
+                "WHERE trajectory_id = ? AND classification != 'contradiction'",
+                (trajectory_id,),
+            )
+            if not occurrences:
+                return
+            seq = self._alloc_occurrence_id("O-")
+            now = _now()
+            for occ in occurrences:
+                occ.id = f"O-{seq:06d}"
+                seq += 1
+                self.db.execute(
+                    "INSERT INTO experience_occurrences("
+                    "id, trajectory_id, project_id, pattern_type, group_key, "
+                    "start_sequence, end_sequence, failure_family, resolution_family, "
+                    "repair_context, error_signature, classification, features_json, "
+                    "dedupe_hash, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        occ.id, occ.trajectory_id, occ.project_id, occ.pattern_type,
+                        occ.group_key, occ.start_sequence, occ.end_sequence,
+                        occ.failure_family, occ.resolution_family, occ.repair_context,
+                        occ.error_signature, occ.classification,
+                        _json(occ.features or None), occ.dedupe_key(), now,
+                    ),
+                )
+
+    def load_occurrences(self, *, classifications: tuple[str, ...] | None = None) -> list[Any]:
+        where = ""
+        params: tuple = ()
+        if classifications:
+            placeholders = ",".join("?" for _ in classifications)
+            where = f" WHERE classification IN ({placeholders})"
+            params = classifications
+        return self.db.query(
+            "SELECT * FROM experience_occurrences" + where + " ORDER BY id", params
+        )
+
+    def rebuild_experiences(self, grouped: list[Any], contradictions: list[Any]) -> None:
+        """Replace experiences + evidence from a freshly computed grouping.
+
+        ``grouped`` items expose the ``GroupedExperience`` shape;
+        ``contradictions`` are the synthesized ``Occurrence`` objects that need
+        persisting (their ``.id`` is assigned here).
+        """
+
+        now = _now()
+        with self.db.transaction():
+            id_by_group = {
+                r["group_key"]: r["id"]
+                for r in self.db.query("SELECT id, group_key FROM experiences")
+            }
+            review_by_group = {
+                r["group_key"]: (r["review_status"], r["reviewed_at"], r["review_note"])
+                for r in self.db.query(
+                    "SELECT group_key, review_status, reviewed_at, review_note FROM experiences"
+                )
+            }
+            self.db.execute("DELETE FROM experience_evidence")
+            self.db.execute("DELETE FROM experiences")
+            self.db.execute(
+                "DELETE FROM experience_occurrences WHERE classification = 'contradiction'"
+            )
+
+            cseq = self._alloc_occurrence_id("OC-")
+            contradiction_id: dict[str, str] = {}
+            for occ in contradictions:
+                occ.id = f"OC-{cseq:06d}"
+                cseq += 1
+                contradiction_id[f"{occ.trajectory_id}|{occ.group_key}"] = occ.id
+                self.db.execute(
+                    "INSERT INTO experience_occurrences("
+                    "id, trajectory_id, project_id, pattern_type, group_key, "
+                    "start_sequence, end_sequence, failure_family, resolution_family, "
+                    "repair_context, error_signature, classification, features_json, "
+                    "dedupe_hash, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        occ.id, occ.trajectory_id, occ.project_id, occ.pattern_type,
+                        occ.group_key, occ.start_sequence, occ.end_sequence,
+                        occ.failure_family, occ.resolution_family, occ.repair_context,
+                        occ.error_signature, occ.classification,
+                        _json(occ.features or None), occ.dedupe_key(), now,
+                    ),
+                )
+
+            next_e = 1 + max(
+                (int(v.split("-")[1]) for v in id_by_group.values() if v.startswith("E-")),
+                default=0,
+            )
+            for exp in grouped:
+                eid = id_by_group.get(exp.group_key)
+                if eid is None:
+                    eid = f"E-{next_e:04d}"
+                    next_e += 1
+                rev = review_by_group.get(exp.group_key, ("unreviewed", None, None))
+                self.db.execute(
+                    "INSERT INTO experiences("
+                    "id, group_key, title, summary, reusable_lesson, pattern_type, "
+                    "context_json, status, confidence, confidence_json, support_count, "
+                    "contradiction_count, ambiguous_count, occurrence_count, project_count, "
+                    "first_seen_at, last_seen_at, summary_source, review_status, "
+                    "reviewed_at, review_note, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        eid, exp.group_key, exp.summary.title, exp.summary.summary,
+                        exp.summary.reusable_lesson, exp.pattern_type,
+                        _json(exp.summary.context or None), exp.status,
+                        exp.confidence.score, _json(exp.confidence.as_dict()),
+                        exp.support_count, exp.contradiction_count, exp.ambiguous_count,
+                        exp.occurrence_count, exp.project_count,
+                        exp.first_seen_at, exp.last_seen_at, exp.summary.source,
+                        rev[0], rev[1], rev[2], now, now,
+                    ),
+                )
+                for occ in exp.occurrences:
+                    oid = occ.id or contradiction_id.get(
+                        f"{occ.trajectory_id}|{occ.group_key}"
+                    )
+                    if not oid:
+                        continue
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO experience_evidence("
+                        "experience_id, occurrence_id, relationship) VALUES (?, ?, ?)",
+                        (eid, oid, occ.classification),
+                    )
+
+    def record_experience_run(self, stats: dict[str, Any]) -> int:
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO experience_runs("
+                "started_at, finished_at, rebuild, project_filter, trajectories_considered, "
+                "trajectories_analyzed, occurrences_found, clusters_formed, candidates_created, "
+                "needs_more_evidence, llm_used, llm_tokens, runtime_seconds) "
+                "VALUES (:started_at, :finished_at, :rebuild, :project_filter, "
+                ":trajectories_considered, :trajectories_analyzed, :occurrences_found, "
+                ":clusters_formed, :candidates_created, :needs_more_evidence, :llm_used, "
+                ":llm_tokens, :runtime_seconds)",
+                stats,
+            )
+            return int(cur.lastrowid)
+
+    def latest_experience_run(self) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM experience_runs ORDER BY id DESC LIMIT 1"
+        )
+
+    # ---- read side (CLI + UI) --------------------------------------
+    def list_experiences(
+        self, *, status: str | None = None, order: str = "confidence"
+    ) -> list[Any]:
+        where = " WHERE status = ?" if status else ""
+        params = (status,) if status else ()
+        order_sql = {
+            "confidence": "confidence DESC, occurrence_count DESC, id",
+            "recent": "last_seen_at DESC, id",
+            "id": "id",
+        }.get(order, "confidence DESC, id")
+        return self.db.query(
+            f"SELECT * FROM experiences{where} ORDER BY {order_sql}", params
+        )
+
+    def get_experience(self, experience_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM experiences WHERE id = ?", (experience_id,)
+        )
+
+    def get_experience_evidence(self, experience_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT ev.relationship, o.id AS occurrence_id, o.trajectory_id, "
+            "       o.pattern_type, o.start_sequence, o.end_sequence, o.repair_context, "
+            "       o.failure_family, o.resolution_family, o.error_signature, "
+            "       o.features_json, o.classification, "
+            "       t.task AS task, t.agent AS agent, t.final_status AS final_status, "
+            "       p.name AS project_name "
+            "FROM experience_evidence ev "
+            "JOIN experience_occurrences o ON o.id = ev.occurrence_id "
+            "LEFT JOIN trajectories t ON t.id = o.trajectory_id "
+            "LEFT JOIN projects p ON p.id = o.project_id "
+            "WHERE ev.experience_id = ? "
+            "ORDER BY CASE ev.relationship WHEN 'support' THEN 0 "
+            "         WHEN 'ambiguous' THEN 1 ELSE 2 END, o.trajectory_id",
+            (experience_id,),
+        )
+
+    def set_experience_review(
+        self, experience_id: str, *, review_status: str, note: str | None
+    ) -> bool:
+        existing = self.get_experience(experience_id)
+        if existing is None:
+            return False
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE experiences SET review_status = ?, reviewed_at = ?, "
+                "review_note = ?, updated_at = ? WHERE id = ?",
+                (review_status, _now(), note, _now(), experience_id),
+            )
+        return True
+
+    def experience_counts(self) -> dict[str, int]:
+        def one(sql: str) -> int:
+            row = self.db.query_one(sql)
+            return int(row[0]) if row else 0
+
+        return {
+            "experiences": one("SELECT COUNT(*) FROM experiences"),
+            "candidates": one("SELECT COUNT(*) FROM experiences WHERE status = 'candidate'"),
+            "needs_more_evidence": one(
+                "SELECT COUNT(*) FROM experiences WHERE status = 'needs_more_evidence'"
+            ),
+            "occurrences": one("SELECT COUNT(*) FROM experience_occurrences"),
+            "false_positives": one(
+                "SELECT COUNT(*) FROM experiences WHERE review_status = 'false_positive'"
+            ),
+        }
+
 
 def rows_to_dicts(rows: Iterable[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
