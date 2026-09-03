@@ -89,6 +89,44 @@ def build_parser() -> argparse.ArgumentParser:
     p_show.add_argument("--json", action="store_true")
     p_show.set_defaults(func=cmd_show)
 
+    p_exp = sub.add_parser("experiences", help="extract / inspect candidate experiences (Stage 5)")
+    exp_sub = p_exp.add_subparsers(dest="exp_command", metavar="<subcommand>")
+
+    e_extract = exp_sub.add_parser("extract", help="detect pattern occurrences and (re)build experiences")
+    e_extract.add_argument("--project", metavar="PATH", help="only analyze trajectories for this repo root")
+    e_extract.add_argument("--rebuild", action="store_true", help="reprocess every trajectory from scratch")
+    e_extract.add_argument("--min-occurrences", type=int, default=None, help="candidate threshold (default 3)")
+    e_extract.add_argument("--max-event-gap", type=int, default=None, help="failure->resolution window (default 20)")
+    e_extract.add_argument(
+        "--min-correction-tokens", type=int, default=None,
+        help="bare human-correction token cap (default 3)",
+    )
+    e_extract.add_argument("--json", action="store_true")
+    e_extract.set_defaults(func=cmd_experiences_extract)
+
+    e_list = exp_sub.add_parser("list", help="list candidate experiences")
+    e_list.add_argument(
+        "--status", choices=["candidate", "needs_more_evidence", "rejected", "archived"]
+    )
+    e_list.add_argument("--json", action="store_true")
+    e_list.set_defaults(func=cmd_experiences_list)
+
+    e_show = exp_sub.add_parser("show", help="inspect one experience and its evidence")
+    e_show.add_argument("experience_id")
+    e_show.add_argument("--json", action="store_true")
+    e_show.set_defaults(func=cmd_experiences_show)
+
+    e_review = exp_sub.add_parser("review", help="record a false-positive / validity annotation")
+    e_review.add_argument("experience_id")
+    e_review.add_argument(
+        "--status", required=True,
+        choices=["valid", "false_positive", "needs_more_evidence", "unreviewed"],
+    )
+    e_review.add_argument("--note", default=None)
+    e_review.set_defaults(func=cmd_experiences_review)
+
+    p_exp.set_defaults(func=lambda _a: (p_exp.print_help() or 0))
+
     p_ui = sub.add_parser("ui", help="launch the local, read-only trajectory explorer")
     p_ui.add_argument(
         "--port", type=int, default=None,
@@ -289,6 +327,135 @@ def cmd_show(args: argparse.Namespace) -> int:
         print("    " + "  ".join(bits))
     if len(events) > args.events:
         print(f"    ... {len(events) - args.events} more")
+    return 0
+
+
+def _experience_config(args: argparse.Namespace):
+    from trajweave.experience import ExperienceConfig
+
+    base = ExperienceConfig()
+    return ExperienceConfig(
+        min_occurrences=args.min_occurrences if getattr(args, "min_occurrences", None) else base.min_occurrences,
+        max_event_gap=args.max_event_gap if getattr(args, "max_event_gap", None) else base.max_event_gap,
+        meaningful_correction_min_tokens=(
+            args.min_correction_tokens
+            if getattr(args, "min_correction_tokens", None)
+            else base.meaningful_correction_min_tokens
+        ),
+    ).validated()
+
+
+def cmd_experiences_extract(args: argparse.Namespace) -> int:
+    from trajweave.experience import ExperienceExtractor
+
+    cfg = _experience_config(args)
+    with _open_db(args) as db:
+        repo = Repository(db)
+        project_id = _resolve_project_id(repo, args.project)
+        if project_id == "__no_such_project__":
+            log.error("no registered project with root %s", args.project)
+            return 2
+        result = ExperienceExtractor(repo, cfg).run(project_id=project_id, rebuild=args.rebuild)
+
+    if args.json:
+        _print_json(result.as_dict())
+        return 0
+
+    print(f"Trajectories considered: {result.trajectories_considered}")
+    print(f"New trajectories analyzed: {result.trajectories_analyzed}")
+    print()
+    print(f"Pattern occurrences found: {result.occurrences_found}")
+    print(f"Clusters formed: {result.clusters_formed}")
+    print()
+    print(f"Experience candidates created: {result.candidates_created}")
+    print(f"Need more evidence: {result.needs_more_evidence}")
+    print()
+    print(f"LLM summaries: {'enabled' if result.llm_used else 'no'}"
+          + (f" ({result.llm_tokens} tokens)" if result.llm_tokens else ""))
+    print(f"Runtime: {result.runtime_seconds:.2f}s")
+    if result.top_candidates:
+        print("\nHighest-confidence candidates:\n")
+        for c in result.top_candidates:
+            print(f"  {c['confidence']:.2f}  {c['title']}  "
+                  f"(x{c['occurrences']}, +{c['support']}/-{c['contradictions']}, "
+                  f"{c['projects']} proj)")
+    return 0
+
+
+def cmd_experiences_list(args: argparse.Namespace) -> int:
+    with _open_db(args) as db:
+        rows = [dict(r) for r in Repository(db).list_experiences(status=args.status)]
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No experiences yet. Run 'trajweave experiences extract'.")
+        return 0
+    print(f"{'ID':<8}  {'CONF':>4}  {'OCC':>4}  {'SUP':>4}  {'CON':>4}  {'PROJ':>4}  "
+          f"{'STATUS':<19}  {'REVIEW':<14}  TITLE")
+    for r in rows:
+        print(
+            f"{r['id']:<8}  {r['confidence']:>4.2f}  {r['occurrence_count']:>4}  "
+            f"{r['support_count']:>4}  {r['contradiction_count']:>4}  {r['project_count']:>4}  "
+            f"{r['status']:<19}  {r['review_status']:<14}  {(r['title'] or '')[:60]}"
+        )
+    return 0
+
+
+def cmd_experiences_show(args: argparse.Namespace) -> int:
+    with _open_db(args) as db:
+        repo = Repository(db)
+        exp = repo.get_experience(args.experience_id)
+        if exp is None:
+            log.error("no experience %s", args.experience_id)
+            return 2
+        exp = dict(exp)
+        evidence = [dict(e) for e in repo.get_experience_evidence(args.experience_id)]
+
+    if args.json:
+        _print_json({"experience": exp, "evidence": evidence})
+        return 0
+
+    try:
+        conf = json.loads(exp.get("confidence_json") or "{}")
+    except (TypeError, ValueError):
+        conf = {}
+
+    print(f"{exp['id']}  {exp['title']}")
+    print(f"  status        : {exp['status']}   review: {exp['review_status']}")
+    print(f"  pattern_type  : {exp['pattern_type']}")
+    print(f"  confidence    : {exp['confidence']:.2f}")
+    print(f"  occurrences   : {exp['occurrence_count']}  "
+          f"(support {exp['support_count']}, contradiction {exp['contradiction_count']}, "
+          f"ambiguous {exp['ambiguous_count']})")
+    print(f"  projects      : {exp['project_count']}")
+    print(f"  seen          : {exp['first_seen_at']}  ->  {exp['last_seen_at']}")
+    comp = conf.get("components", {})
+    if comp:
+        print(f"  confidence parts: support_ratio={comp.get('support_ratio')}, "
+              f"recurrence={comp.get('recurrence')}, cross_project={comp.get('cross_project')}, "
+              f"recency={comp.get('recency')}")
+    print(f"\n  summary\n    {exp['summary']}")
+    print(f"\n  candidate reusable lesson\n    {exp['reusable_lesson']}")
+    if exp.get("review_note"):
+        print(f"\n  review note: {exp['review_note']}")
+    print("\n  evidence:")
+    for e in evidence:
+        task = (e.get("task") or "").replace("\n", " ")[:52]
+        print(f"    {e['trajectory_id']:<12}  {e['relationship']:<13}  "
+              f"seq {e['start_sequence']}-{e['end_sequence']}  {task}")
+    return 0
+
+
+def cmd_experiences_review(args: argparse.Namespace) -> int:
+    with _open_db(args) as db:
+        ok = Repository(db).set_experience_review(
+            args.experience_id, review_status=args.status, note=args.note
+        )
+    if not ok:
+        log.error("no experience %s", args.experience_id)
+        return 2
+    print(f"{args.experience_id}: review_status = {args.status}")
     return 0
 
 

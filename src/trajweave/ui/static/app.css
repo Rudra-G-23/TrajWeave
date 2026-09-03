@@ -318,6 +318,11 @@ h2 { font-size: 15px; margin: 24px 0 10px; }
 .cat-done     { border-left-color: var(--ok); }
 .cat-unknown  { border-left-color: var(--border-strong); }
 
+.tl-hi .tl-card {
+  border-color: var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
 .repair-note {
   margin: 10px 0 4px;
   padding: 4px 10px;

@@ -234,6 +234,61 @@ def build_trajectory(repo: Repository, trajectory_id: str) -> dict[str, Any] | N
     return {"trajectory": traj, "events": events, "files": files}
 
 
+def build_experiences(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
+    def first(name: str) -> str | None:
+        vals = params.get(name)
+        return vals[0].strip() if vals and vals[0].strip() else None
+
+    try:
+        rows = repo.list_experiences(status=first("status"), order=first("order") or "confidence")
+    except sqlite3.OperationalError:
+        # schema v1 DB (pre Stage 5) - present as "no experiences yet".
+        return {"experiences": [], "counts": {}, "run": None, "schema_ok": False}
+    counts = repo.experience_counts()
+    run = repo.latest_experience_run()
+    return {
+        "experiences": [_experience_row(r) for r in rows],
+        "counts": counts,
+        "run": dict(run) if run else None,
+        "schema_ok": True,
+    }
+
+
+def build_experience(repo: Repository, experience_id: str) -> dict[str, Any] | None:
+    try:
+        row = repo.get_experience(experience_id)
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    exp = _experience_row(row)
+    conf, ok = _loads(row["confidence_json"])
+    exp["confidence_breakdown"] = conf if ok else None
+    ctx, ok = _loads(row["context_json"])
+    exp["context"] = ctx if ok and isinstance(ctx, list) else []
+
+    evidence = []
+    for e in repo.get_experience_evidence(experience_id):
+        ed = dict(e)
+        feats, fok = _loads(ed.pop("features_json", None))
+        ed["features"] = feats if fok else None
+        evidence.append(ed)
+    return {"experience": exp, "evidence": evidence}
+
+
+def _experience_row(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    for k in (
+        "support_count", "contradiction_count", "ambiguous_count",
+        "occurrence_count", "project_count",
+    ):
+        d[k] = int(d.get(k) or 0)
+    d["confidence"] = float(d.get("confidence") or 0.0)
+    d.pop("confidence_json", None)
+    d.pop("context_json", None)
+    return d
+
+
 def build_debug_sessions(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
     def first(name: str) -> str | None:
         vals = params.get(name)
@@ -362,6 +417,16 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 return self._json(payload) if payload else self._error(404, "no such project")
             if path == "/api/sessions":
                 return self._json(build_sessions(repo, params))
+            if path == "/api/experiences":
+                return self._json(build_experiences(repo, params))
+            if path.startswith("/api/experiences/"):
+                eid = path[len("/api/experiences/") :]
+                payload = build_experience(repo, eid)
+                return (
+                    self._json(payload)
+                    if payload
+                    else self._error(404, "no such experience")
+                )
             if path == "/api/debug/sessions":
                 return self._json(build_debug_sessions(repo, params))
             if path.startswith("/api/trajectories/"):
@@ -381,6 +446,8 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 return self._json(
                     {"sessions": [], "total": 0, "limit": _DEFAULT_PAGE, "offset": 0}
                 )
+            if path == "/api/experiences":
+                return self._json({"experiences": [], "counts": {}, "run": None})
             if path == "/api/debug/sessions":
                 return self._json({"sessions": []})
             self._error(404, "no database yet")
