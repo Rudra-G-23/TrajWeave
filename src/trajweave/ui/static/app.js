@@ -41,6 +41,17 @@ async function api(path) {
   return body;
 }
 
+async function apiWrite(path, body = {}) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const value = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((value && value.error) || `${res.status} ${res.statusText}`);
+  return value;
+}
+
 function esc(s) {
   return String(s == null ? "" : s);
 }
@@ -163,6 +174,12 @@ async function render() {
     } else if (path.startsWith("/experience/")) {
       navSetActive("experiences");
       await viewExperience(view, decodeURIComponent(path.slice("/experience/".length)));
+    } else if (path === "/reviews") {
+      navSetActive("reviews");
+      await viewReviews(view);
+    } else if (path.startsWith("/review/")) {
+      navSetActive("reviews");
+      await viewReview(view, decodeURIComponent(path.slice("/review/".length)));
     } else if (path === "/debug") {
       navSetActive(null);
       await viewDebug(view, params);
@@ -983,6 +1000,120 @@ function relClass(rel) {
   if (rel === "support") return "success";
   if (rel === "contradiction") return "failure";
   return "partial";
+}
+
+/* ---------- Stage 7 review queue -------------------------- */
+function reviewStatus(status) {
+  return el("span", { class: "tag review-status-" + (status || "unreviewed"), text: (status || "unreviewed").replace("_", " ") });
+}
+
+async function viewReviews(view) {
+  const data = await api("/api/reviews");
+  const rows = data.reviews || [];
+  const parts = [
+    el("div", { class: "page-head" }, el("h1", { text: "Review" })),
+    el("p", { class: "muted", text: "Review Stage 6 proposals, inspect exact targets and diffs, then Apply explicitly. Accept never writes a repository file." }),
+  ];
+  if (!rows.length) {
+    parts.push(el("div", { class: "empty" }, el("p", { text: "No reviewable proposals." }),
+      el("p", {}, "Run ", el("code", { text: "trajweave placements generate" }), " after Stage 5 extraction.")));
+    view.replaceChildren(...parts);
+    return;
+  }
+  const tbody = el("tbody");
+  rows.forEach((row) => tbody.append(el("tr", {},
+    el("td", { class: "id-cell" }, el("a", { href: `#/review/${encodeURIComponent(row.review_id)}`, text: row.review_id })),
+    el("td", {}, reviewStatus(row.review_status)),
+    el("td", { text: row.experience_id }),
+    el("td", { text: placementLabel(row.recommended_type) }),
+    el("td", {}, confPill(row.recommended_score)),
+    el("td", { class: "task", text: row.experience_title || "(untitled)" })
+  )));
+  parts.push(el("table", { class: "tbl" },
+    el("thead", {}, el("tr", {}, ...["Review", "Status", "Experience", "Recommendation", "Score", "Title"].map((h) => el("th", { text: h })))), tbody));
+  view.replaceChildren(...parts);
+}
+
+function reviewActionButton(label, action, value, reload, cls = "") {
+  return el("button", { class: cls, type: "button", text: label, onclick: async () => {
+    try { await apiWrite(`/api/reviews/${encodeURIComponent(value)}/${action}`); await reload(); }
+    catch (err) { alert(err.message); }
+  }});
+}
+
+async function viewReview(view, id) {
+  const data = await api("/api/reviews/" + encodeURIComponent(id));
+  const review = data.review || {};
+  const proposal = data.proposal || {};
+  const exp = data.experience || {};
+  const currentStatus = review.computed_status || review.status || "unreviewed";
+  const parts = [
+    el("p", { class: "crumbs" }, el("a", { href: "#/reviews" }, "Reviews"), " / ", id),
+    el("div", { class: "detail-head review-head" },
+      el("div", {}, el("span", { class: "id-cell mono", text: review.id || "virtual review" }), "  ", reviewStatus(currentStatus)),
+      el("div", { class: "dh-title", text: exp.title || exp.id || "Review" }),
+      el("p", { class: "muted", text: "Accept approves the idea. Apply is a separate filesystem operation." })
+    ),
+    el("h2", { text: "Experience" }), el("p", {}, exp.summary || exp.reusable_lesson || "-"),
+    el("h2", { text: "Recommendation" }),
+    el("p", {}, el("strong", { text: placementLabel(proposal.placement_type) }), " ", confPill(proposal.score),
+      " ", el("span", { class: "muted", text: `Scope: ${placementScope(proposal)}` })),
+    el("p", { class: "muted", text: (proposal.diagnostics || []).map(diagnosticText).join(" | ") || "No diagnostics" }),
+  ];
+  parts.push(el("h2", { text: "Alternatives" }));
+  const altBody = el("tbody");
+  (data.alternatives || []).forEach((alt) => altBody.append(el("tr", {},
+    el("td", { text: String(alt.rank) }), el("td", { text: placementLabel(alt.placement_type) }),
+    el("td", {}, confPill(alt.score)), el("td", { class: "mono", text: placementScope(alt) }),
+    el("td", { class: "task", text: alt.proposed_content || "-" }),
+    el("td", {}, alt.id === proposal.id ? el("span", { class: "tag", text: "selected" }) :
+      el("button", { type: "button", text: "Choose", onclick: async () => {
+        try { await apiWrite(`/api/reviews/${encodeURIComponent(id)}/choose`, { placement: alt.placement_type }); await viewReview(view, id); }
+        catch (err) { alert(err.message); }
+      }}))
+  )));
+  parts.push(el("table", { class: "tbl" }, el("thead", {}, el("tr", {}, ...["Rank", "Placement", "Score", "Scope", "Canonical knowledge", "Action"].map((h) => el("th", { text: h })))), altBody));
+
+  const editor = el("textarea", { class: "review-editor", rows: "6" });
+  editor.value = proposal.effective_content || proposal.proposed_content || "";
+  const agent = el("select", { "aria-label": "Target agent" },
+    el("option", { value: "", text: "Choose agent" }), el("option", { value: "codex", text: "Codex - AGENTS.md" }),
+    el("option", { value: "claude", text: "Claude - CLAUDE.md" }));
+  if (review.target_agent) agent.value = review.target_agent;
+  const target = el("input", { class: "review-target", type: "text", placeholder: "Optional exact target path" });
+  target.value = review.target_path || "";
+  const statusLine = el("p", { class: "muted", text: "Preview is required before Apply." });
+  const diffBox = el("pre", { class: "review-diff", text: "" });
+  const reload = () => viewReview(view, id);
+  const editButton = el("button", { type: "button", text: "Save edited content", onclick: async () => {
+    try { await apiWrite(`/api/reviews/${encodeURIComponent(id)}/edit`, { content: editor.value }); await reload(); }
+    catch (err) { alert(err.message); }
+  }});
+  const previewButton = el("button", { type: "button", text: "Preview", onclick: async () => {
+    try {
+      const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/preview`, { agent: agent.value || undefined, target: target.value || undefined });
+      diffBox.textContent = result.unified_diff || "(no changes)";
+      statusLine.textContent = `Preview ${result.preview_id} - target hash ${result.target_hash || "(missing)"}`;
+      applyButton.disabled = false;
+    } catch (err) { applyButton.disabled = true; alert(err.message); }
+  }});
+  const dryRunButton = el("button", { type: "button", text: "Dry-run", onclick: async () => {
+    try { const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/apply`, { dry_run: true }); diffBox.textContent = result.unified_diff || "(no changes)"; statusLine.textContent = "Dry-run complete - writes: no"; }
+    catch (err) { alert(err.message); }
+  }});
+  const applyButton = el("button", { class: "apply-button", type: "button", text: "Apply", disabled: true, onclick: async () => {
+    if (!confirm("Apply this exact preview to the selected target?")) return;
+    try { const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/apply`, {}); statusLine.textContent = `${result.outcome}: ${result.target_path}`; applyButton.disabled = true; }
+    catch (err) { alert(err.message); }
+  }});
+  parts.push(el("h2", { text: "Editable content" }), editor, el("div", { class: "review-targets" }, agent, target),
+    el("div", { class: "review-actions" },
+      reviewActionButton("Accept", "accept", id, reload, "accept-button"),
+      reviewActionButton("Reject", "reject", id, reload), reviewActionButton("Defer", "defer", id, reload),
+      reviewActionButton("Test first", "test-first", id, reload), editButton),
+    el("h2", { text: "Exact target and diff" }), el("div", { class: "review-actions" }, previewButton, dryRunButton, applyButton), statusLine, diffBox,
+    el("h2", { text: "Evidence and history" }), el("p", { class: "muted", text: `${(data.evidence || []).length} linked occurrence(s); ${(data.history && data.history.actions || []).length} recorded action(s).` }));
+  view.replaceChildren(...parts);
 }
 
 /* ---------- import ledger (debug) ----------------------- */

@@ -1000,7 +1000,7 @@ class Repository:
 
     def get_placement_proposals(self, experience_id: str) -> list[Any]:
         return self.db.query(
-            "SELECT pp.*, ps.experience_id FROM placement_proposals pp "
+            "SELECT pp.*, ps.experience_id, ps.id AS proposal_set_id FROM placement_proposals pp "
             "JOIN placement_proposal_sets ps ON ps.id = pp.proposal_set_id "
             "WHERE ps.experience_id = ? ORDER BY pp.rank, pp.placement_type",
             (experience_id,),
@@ -1057,6 +1057,244 @@ class Repository:
         return {
             "proposal_sets": one("SELECT COUNT(*) FROM placement_proposal_sets"),
             "proposals": one("SELECT COUNT(*) FROM placement_proposals"),
+        }
+
+    # ------------------------------------------------------------------
+    # Stage 7 - review and apply ledger
+    # ------------------------------------------------------------------
+    def get_policy_proposal_context(self, proposal_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT pp.*, ps.experience_id, ps.source_fingerprint, ps.generator_version, "
+            "       ps.id AS proposal_set_id, e.title AS experience_title, "
+            "       e.summary AS experience_summary, e.reusable_lesson, "
+            "       e.pattern_type AS experience_pattern_type, p.project_root "
+            "FROM placement_proposals pp "
+            "JOIN placement_proposal_sets ps ON ps.id = pp.proposal_set_id "
+            "JOIN experiences e ON e.id = ps.experience_id "
+            "LEFT JOIN (SELECT experience_id, MAX(project_root) AS project_root "
+            "           FROM (SELECT ev.experience_id, p.root AS project_root "
+            "                 FROM experience_evidence ev "
+            "                 JOIN experience_occurrences o ON o.id = ev.occurrence_id "
+            "                 JOIN projects p ON p.id = o.project_id) GROUP BY experience_id) p "
+            "ON p.experience_id = e.id WHERE pp.id = ?",
+            (proposal_id,),
+        )
+        return dict(row) if row else None
+
+    def get_policy_review(self, review_or_proposal_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM policy_reviews WHERE id = ? OR selected_proposal_id = ? "
+            "OR proposal_set_id = (SELECT proposal_set_id FROM placement_proposals WHERE id = ?) "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (review_or_proposal_id, review_or_proposal_id, review_or_proposal_id),
+        )
+
+    def get_policy_review_by_set(self, proposal_set_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM policy_reviews WHERE proposal_set_id = ?", (proposal_set_id,)
+        )
+
+    def list_policy_reviews(self, *, status: str | None = None) -> list[Any]:
+        where = "WHERE COALESCE(pr.status, 'unreviewed') = ?" if status else ""
+        params = (status,) if status else ()
+        return self.db.query(
+            "SELECT ps.id AS proposal_set_id, ps.experience_id, ps.source_fingerprint, "
+            "       ps.updated_at AS proposal_updated_at, e.title AS experience_title, "
+            "       recommended.id AS recommended_proposal_id, recommended.placement_type AS recommended_type, "
+            "       recommended.score AS recommended_score, recommended.scope_type AS recommended_scope_type, "
+            "       recommended.scope_value AS recommended_scope_value, pr.id AS review_id, "
+            "       pr.status AS review_status_value, pr.selected_proposal_id, pr.target_agent, "
+            "       pr.target_path, pr.source_fingerprint AS review_source_fingerprint, pr.updated_at AS review_updated_at "
+            "FROM placement_proposal_sets ps JOIN experiences e ON e.id = ps.experience_id "
+            "JOIN placement_proposals recommended ON recommended.proposal_set_id = ps.id AND recommended.rank = 1 "
+            "LEFT JOIN policy_reviews pr ON pr.proposal_set_id = ps.id "
+            f"{where} ORDER BY COALESCE(pr.updated_at, ps.updated_at) DESC, ps.experience_id",
+            params,
+        )
+
+    def create_policy_review(self, context: dict[str, Any]) -> str:
+        """Create the durable review snapshot for a proposal set if needed."""
+
+        existing = self.get_policy_review_by_set(str(context["proposal_set_id"]))
+        if existing:
+            return str(existing["id"])
+        review_id = f"RV-{context['proposal_set_id']}"
+        snapshot = {key: context.get(key) for key in (
+            "id", "proposal_set_id", "experience_id", "placement_type", "scope_type",
+            "scope_value", "proposed_content", "score", "rank", "feature_values_json",
+            "diagnostics_json", "generator_version", "source_fingerprint",
+        )}
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO policy_reviews("
+                "id, proposal_set_id, experience_id, selected_proposal_id, source_fingerprint, "
+                "proposal_snapshot_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (review_id, context["proposal_set_id"], context["experience_id"], context["id"],
+                 context["source_fingerprint"], _json(snapshot), now, now),
+            )
+            self.db.execute(
+                "INSERT INTO policy_review_actions(review_id, action, from_status, to_status, "
+                "proposal_id, payload_json, created_at) VALUES (?, 'created', NULL, 'unreviewed', ?, '{}', ?)",
+                (review_id, context["id"], now),
+            )
+        return review_id
+
+    def update_policy_review(
+        self, review_id: str, *, status: str | None = None,
+        selected_proposal_id: str | None = None, target_agent: str | None = None,
+        target_path: str | None = None, target_scope_type: str | None = None,
+        target_scope_value: str | None = None, content_override: str | None = None,
+        content_revision: int | None = None, stale_reason: str | None = None,
+        clear_content_override: bool = False,
+        action: str, payload: dict[str, Any] | None = None,
+    ) -> bool:
+        existing = self.get_policy_review(review_id)
+        if existing is None:
+            return False
+        now = _now()
+        new_status = status or existing["status"]
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_reviews SET status = ?, selected_proposal_id = COALESCE(?, selected_proposal_id), "
+                "target_agent = COALESCE(?, target_agent), target_path = COALESCE(?, target_path), "
+                "target_scope_type = COALESCE(?, target_scope_type), target_scope_value = COALESCE(?, target_scope_value), "
+                "content_override = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE content_override END, "
+                "content_revision = COALESCE(?, content_revision), stale_reason = ?, updated_at = ? WHERE id = ?",
+                (new_status, selected_proposal_id, target_agent, target_path, target_scope_type,
+                 target_scope_value, content_override is not None, content_override, clear_content_override, content_revision,
+                 stale_reason, now, review_id),
+            )
+            self.db.execute(
+                "INSERT INTO policy_review_actions(review_id, action, from_status, to_status, proposal_id, "
+                "variant_revision, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (review_id, action, existing["status"], new_status, selected_proposal_id or existing["selected_proposal_id"],
+                 content_revision, _json(payload or {}), now),
+            )
+        return True
+
+    def record_policy_preview(self, review_id: str, preview: dict[str, Any]) -> str:
+        preview_id = f"PV-{review_id}-{preview['output_hash'][:12]}"
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT OR REPLACE INTO policy_review_previews("
+                "id, review_id, target_path, target_hash, output_hash, proposed_content, unified_diff, "
+                "target_kind, created_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                (preview_id, review_id, preview["target_path"], preview.get("target_hash"),
+                 preview["output_hash"], preview["proposed_content"], preview["unified_diff"],
+                 preview["target_kind"], now),
+            )
+            self.db.execute(
+                "UPDATE policy_reviews SET latest_preview_id = ?, updated_at = ? WHERE id = ?",
+                (preview_id, now, review_id),
+            )
+        return preview_id
+
+    def record_policy_variant(
+        self, review_id: str, *, revision: int, proposal_id: str, content: str, content_hash: str
+    ) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO policy_review_variants(review_id, revision, proposal_id, content, content_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (review_id, revision, proposal_id, content, content_hash, _now()),
+            )
+
+    def get_policy_preview(self, preview_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policy_review_previews WHERE id = ?", (preview_id,))
+
+    def latest_policy_preview(self, review_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM policy_review_previews WHERE review_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (review_id,),
+        )
+
+    def record_policy_application(self, review_id: str, result: dict[str, Any]) -> int:
+        now = _now()
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO policy_applications(review_id, preview_id, outcome, target_path, before_hash, "
+                "after_hash, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (review_id, result.get("preview_id"), result["outcome"], result.get("target_path"),
+                 result.get("before_hash"), result.get("after_hash"), result.get("detail"), now),
+            )
+            self.db.execute(
+                "INSERT INTO policy_review_actions(review_id, action, from_status, to_status, payload_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (review_id, "apply_" + result["outcome"], result.get("from_status"), result.get("to_status"),
+                 _json(result), now),
+            )
+            if result["outcome"] in {"applied", "already_applied"}:
+                self.db.execute(
+                    "UPDATE policy_reviews SET status = 'applied', updated_at = ? WHERE id = ?",
+                    (now, review_id),
+                )
+            return int(cur.lastrowid)
+
+    def pending_policy_application(self, review_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM policy_applications WHERE review_id = ? AND outcome = 'pending' "
+            "ORDER BY id DESC LIMIT 1", (review_id,)
+        )
+
+    def begin_policy_application(self, review_id: str, result: dict[str, Any]) -> int:
+        now = _now()
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO policy_applications(review_id, preview_id, outcome, target_path, before_hash, "
+                "after_hash, detail, created_at) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)",
+                (review_id, result.get("preview_id"), result.get("target_path"), result.get("before_hash"),
+                 result.get("after_hash"), "atomic apply started", now),
+            )
+            self.db.execute(
+                "INSERT INTO policy_review_actions(review_id, action, from_status, to_status, payload_json, created_at) "
+                "VALUES (?, 'apply_started', ?, ?, ?, ?)",
+                (review_id, result.get("from_status"), result.get("from_status"), _json(result), now),
+            )
+            return int(cur.lastrowid)
+
+    def finalize_policy_application(self, application_id: int, review_id: str, result: dict[str, Any]) -> None:
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_applications SET outcome = ?, target_path = ?, before_hash = ?, after_hash = ?, detail = ? "
+                "WHERE id = ?", (result["outcome"], result.get("target_path"), result.get("before_hash"),
+                                  result.get("after_hash"), result.get("detail"), application_id),
+            )
+            self.db.execute(
+                "INSERT INTO policy_review_actions(review_id, action, from_status, to_status, payload_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (review_id, "apply_" + result["outcome"], result.get("from_status"), result.get("to_status"),
+                 _json(result), now),
+            )
+            if result["outcome"] in {"applied", "already_applied"}:
+                self.db.execute(
+                    "UPDATE policy_reviews SET status = 'applied', updated_at = ? WHERE id = ?",
+                    (now, review_id),
+                )
+
+    def consume_policy_preview(self, preview_id: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_review_previews SET consumed_at = ? WHERE id = ?",
+                (_now(), preview_id),
+            )
+
+    def policy_review_history(self, review_id: str) -> dict[str, list[Any]]:
+        return {
+            "actions": self.db.query(
+                "SELECT * FROM policy_review_actions WHERE review_id = ? ORDER BY id", (review_id,)
+            ),
+            "previews": self.db.query(
+                "SELECT * FROM policy_review_previews WHERE review_id = ? ORDER BY created_at, id", (review_id,)
+            ),
+            "variants": self.db.query(
+                "SELECT * FROM policy_review_variants WHERE review_id = ? ORDER BY revision", (review_id,)
+            ),
+            "applications": self.db.query(
+                "SELECT * FROM policy_applications WHERE review_id = ? ORDER BY id", (review_id,)
+            ),
         }
 
 
