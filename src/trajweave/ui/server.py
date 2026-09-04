@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 from trajweave import __version__
 from trajweave.config.paths import TrajWeavePaths
+from trajweave.evaluation import EvaluationError, EvaluationService
 from trajweave.review.service import ReviewError, ReviewService
 from trajweave.review.targets import SafetyError
 from trajweave.storage.database import Database
@@ -403,6 +404,22 @@ def _placement_row(row: Any) -> dict[str, Any]:
     return d
 
 
+def build_evaluations(repo: Repository) -> dict[str, Any]:
+    try:
+        rows = repo.list_evaluation_specs()
+    except (AttributeError, sqlite3.OperationalError):
+        # Databases created before Stage 8 remain inspectable in the UI.
+        return {"evaluations": [], "schema_ok": False}
+    return {"evaluations": [dict(row) for row in rows], "schema_ok": True}
+
+
+def build_evaluation(repo: Repository, evaluation_id: str, db_path: Path) -> dict[str, Any] | None:
+    try:
+        return EvaluationService(repo, TrajWeavePaths(db_path.parent)).history(evaluation_id)
+    except (EvaluationError, AttributeError, sqlite3.OperationalError):
+        return None
+
+
 def build_debug_sessions(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
     def first(name: str) -> str | None:
         vals = params.get(name)
@@ -616,6 +633,12 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 value = path[len("/api/reviews/"):]
                 payload = build_review(repo, value, db_path)
                 return self._json(payload) if payload else self._error(404, "no such review or proposal")
+            if path == "/api/evals":
+                return self._json(build_evaluations(repo))
+            if path.startswith("/api/evals/"):
+                value = path[len("/api/evals/"):]
+                payload = build_evaluation(repo, value, db_path)
+                return self._json(payload) if payload else self._error(404, "no such evaluation")
             if path == "/api/debug/sessions":
                 return self._json(build_debug_sessions(repo, params))
             if path.startswith("/api/trajectories/"):
@@ -641,6 +664,8 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 return self._json({"placements": [], "schema_ok": False})
             if path == "/api/reviews":
                 return self._json({"reviews": [], "schema_ok": False})
+            if path == "/api/evals":
+                return self._json({"evaluations": [], "schema_ok": False})
             if path == "/api/debug/sessions":
                 return self._json({"sessions": []})
             self._error(404, "no database yet")

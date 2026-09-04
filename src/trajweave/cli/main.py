@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -203,6 +204,65 @@ def build_parser() -> argparse.ArgumentParser:
     p_apply.add_argument("review_id")
     p_apply.add_argument("--dry-run", action="store_true", help="show the exact diff without writing")
     p_apply.set_defaults(func=cmd_apply)
+
+    p_eval = sub.add_parser(
+        "eval", help="run and inspect Stage 8 baseline/candidate evaluations of a reviewed policy"
+    )
+    eval_sub = p_eval.add_subparsers(dest="eval_command", metavar="<subcommand>")
+
+    ev_list = eval_sub.add_parser("list", help="list frozen evaluations")
+    ev_list.add_argument("--json", action="store_true")
+    ev_list.set_defaults(func=cmd_eval_list)
+
+    ev_show = eval_sub.add_parser("show", help="show one evaluation, its runs, and comparisons")
+    ev_show.add_argument("evaluation_id")
+    ev_show.add_argument("--json", action="store_true")
+    ev_show.set_defaults(func=cmd_eval_show)
+
+    ev_run = eval_sub.add_parser(
+        "run",
+        help="create a frozen evaluation from a reviewed proposal, or add repetitions to one",
+    )
+    ev_run.add_argument(
+        "ref", help="a reviewed review/proposal id (creates a new evaluation) "
+                    "or an existing evaluation id (adds repetitions to it)"
+    )
+    ev_run.add_argument("--repo", metavar="PATH", help="repository to snapshot (required when creating)")
+    ev_run.add_argument("--commit", help="commit to snapshot (default: HEAD of --repo)")
+    ev_run.add_argument("--task", help="inline task description")
+    ev_run.add_argument("--task-file", metavar="PATH", help="read the task specification from a file")
+    ev_run.add_argument(
+        "--verify", action="append", metavar="CMD",
+        help="a verifier shell command (repeatable; the first is the primary task check)",
+    )
+    ev_run.add_argument(
+        "--agent-cmd", metavar="CMD",
+        help="shell command that performs the task inside the isolated workspace "
+             "(omit to skip the agent step and only verify the isolated snapshot); "
+             "never invoked automatically - this must be passed explicitly",
+    )
+    ev_run.add_argument("--target-agent", choices=["codex", "claude"], help="default: the review's target agent")
+    ev_run.add_argument("--target", help="explicit relative override for the candidate policy's target path")
+    ev_run.add_argument("--agent-name", help="harness/agent name, for provenance only")
+    ev_run.add_argument("--agent-version")
+    ev_run.add_argument("--model")
+    ev_run.add_argument("--model-version")
+    ev_run.add_argument("--reasoning", help="reasoning/effort configuration, for provenance only")
+    ev_run.add_argument("--timeout", type=int, default=120, help="per-command timeout in seconds")
+    ev_run.add_argument("--repetitions", type=int, default=1, help="paired trials to run now")
+    ev_run.add_argument(
+        "--order", choices=["baseline_first", "candidate_first", "alternating"], default="baseline_first",
+    )
+    ev_run.add_argument("--seed", help="recorded verbatim; TrajWeave does not control agent-side determinism")
+    ev_run.add_argument("--json", action="store_true")
+    ev_run.set_defaults(func=cmd_eval_run)
+
+    ev_compare = eval_sub.add_parser("compare", help="show paired baseline/candidate comparisons")
+    ev_compare.add_argument("evaluation_id")
+    ev_compare.add_argument("--json", action="store_true")
+    ev_compare.set_defaults(func=cmd_eval_compare)
+
+    p_eval.set_defaults(func=lambda _a: (p_eval.print_help() or 0))
 
     p_ui = sub.add_parser("ui", help="launch the local trajectory and review explorer")
     p_ui.add_argument(
@@ -771,6 +831,179 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print("Writes: no")
     else:
         print(f"{result['outcome']}: {result['target_path']}")
+    return 0
+
+
+def _eval_service(args: argparse.Namespace):
+    from trajweave.evaluation import EvaluationService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, EvaluationService(Repository(db), paths)
+
+
+def _parse_verifiers(args: argparse.Namespace) -> list:
+    from trajweave.evaluation.models import VerifierCheck
+
+    checks = []
+    for i, raw in enumerate(args.verify or []):
+        name = "task" if i == 0 else f"check_{i}"
+        checks.append(VerifierCheck(name, shlex.split(raw), args.timeout))
+    return checks
+
+
+def cmd_eval_list(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        rows = service.list()
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No evaluations yet. Run 'trajweave eval run <review-id>'.")
+        return 0
+    print(f"{'EVALUATION':<20}  {'REVIEW':<20}  {'REPS':>4}  {'TARGET':<8}  CREATED")
+    for r in rows:
+        print(
+            f"{r['id']:<20}  {r['review_id']:<20}  {int(r['repetitions']):>4}  "
+            f"{r['target_agent']:<8}  {r['created_at']}"
+        )
+    return 0
+
+
+def _print_eval(payload: dict) -> None:
+    spec = payload["spec"]
+    print(f"{spec['id']}  review={spec['review_id']}  agent={spec['target_agent']}  placement={spec['placement_type']}")
+    print(f"  repo    : {spec['repo_root']} @ {str(spec['repo_commit'])[:12]}")
+    print(f"  created : {spec['created_at']}")
+    print(f"\n  runs: {len(payload['runs'])}")
+    for run in payload["runs"]:
+        print(
+            f"    {run['id']:<38} {run['condition']:<10} {run['status']:<10} "
+            f"dur={run.get('duration_ms')}ms"
+        )
+        if run.get("error_reason"):
+            print(f"       error: {run['error_reason']}")
+        for v in run.get("verifier_results") or []:
+            mark = "PASS" if v["passed"] else "FAIL"
+            print(f"       [{mark}] {v['checker_name']}")
+    print(f"\n  comparisons: {len(payload['comparisons'])}")
+    for c in payload["comparisons"]:
+        print(
+            f"    rep {c['repetition_index']}: {c['outcome']:<12} "
+            f"delta={c.get('task_success_delta')}  regressions={c['regression_count']}"
+        )
+        if c.get("invalid_reason"):
+            print(f"      reason: {c['invalid_reason']}")
+
+
+def cmd_eval_show(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        payload = service.history(args.evaluation_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+    else:
+        _print_eval(payload)
+    return 0
+
+
+def cmd_eval_compare(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        payload = service.history(args.evaluation_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    comparisons = payload["comparisons"]
+    if args.json:
+        _print_json(comparisons)
+        return 0
+    if not comparisons:
+        print("No comparisons recorded yet.")
+        return 0
+    for c in comparisons:
+        print(
+            f"rep {c['repetition_index']}: {c['outcome']}  "
+            f"delta={c.get('task_success_delta')}  regressions={c['regression_count']}"
+        )
+        if c.get("invalid_reason"):
+            print(f"  reason: {c['invalid_reason']}")
+    return 0
+
+
+def cmd_eval_run(args: argparse.Namespace) -> int:
+    from trajweave.evaluation import EvaluationError
+
+    db, service = _eval_service(args)
+    try:
+        existing = service.repo.get_evaluation_spec(args.ref)
+        spec_defining = any((
+            args.repo, args.commit, args.task, args.task_file, args.verify, args.agent_cmd,
+            args.target_agent, args.target, args.agent_name, args.agent_version, args.model,
+            args.model_version, args.reasoning,
+        ))
+        if existing is not None:
+            if spec_defining:
+                log.error(
+                    "%s is an existing evaluation; its spec is frozen. "
+                    "Only --repetitions may be passed when re-running it.", args.ref,
+                )
+                return 2
+            evaluation_id = args.ref
+        else:
+            if not args.repo:
+                log.error("--repo is required when creating a new evaluation")
+                return 2
+            task: dict = {}
+            if args.task_file:
+                task = {"description": Path(args.task_file).read_text("utf-8")}
+            elif args.task:
+                task = {"description": args.task}
+            try:
+                evaluation_id = service.create_spec(
+                    args.ref,
+                    repo=args.repo,
+                    commit=args.commit,
+                    task=task,
+                    verifiers=_parse_verifiers(args),
+                    agent_command=shlex.split(args.agent_cmd) if args.agent_cmd else None,
+                    target_agent=args.target_agent,
+                    target_override=args.target,
+                    agent_name=args.agent_name,
+                    agent_version=args.agent_version,
+                    model_name=args.model,
+                    model_version=args.model_version,
+                    reasoning_config={"reasoning": args.reasoning} if args.reasoning else None,
+                    execution_limits={"timeout_seconds": args.timeout},
+                    condition_order_mode=args.order,
+                    seed=args.seed,
+                )
+            except EvaluationError as exc:
+                log.error(str(exc))
+                return 2
+        try:
+            comparison_ids = service.run_repetition(evaluation_id, count=args.repetitions)
+        except EvaluationError as exc:
+            log.error(str(exc))
+            return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"evaluation_id": evaluation_id, "comparison_ids": comparison_ids})
+        return 0
+    print(f"{evaluation_id}: {len(comparison_ids)} repetition(s) recorded")
+    for cid in comparison_ids:
+        print(f"  {cid}")
     return 0
 
 

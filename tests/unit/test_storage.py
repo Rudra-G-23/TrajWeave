@@ -14,10 +14,10 @@ def _db(tmp_path) -> Database:
 def test_migrations_apply_once(tmp_path):
     path = tmp_path / "tw.db"
     db1 = Database(path)
-    assert db1.schema_version == 5
+    assert db1.schema_version == 6
     db1.close()
     db2 = Database(path)  # re-open: no error, still at head
-    assert db2.schema_version == 5
+    assert db2.schema_version == 6
     # Stage 5, Stage 6, and Stage 7 tables exist.
     names = {
         r["name"]
