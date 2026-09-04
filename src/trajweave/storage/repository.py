@@ -1297,6 +1297,131 @@ class Repository:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Stage 8 - evaluation ledger
+    # ------------------------------------------------------------------
+    def create_evaluation_spec(self, spec: dict[str, Any]) -> None:
+        now = spec.get("created_at") or _now()
+        self.db.execute(
+            "INSERT INTO evaluation_specs("
+            "id, review_id, experience_id, proposal_id, content_revision, policy_content, "
+            "policy_content_hash, placement_type, target_agent, target_override, scope_type, "
+            "scope_value, repo_root, repo_commit, task_spec_json, agent_name, agent_version, "
+            "model_name, model_version, reasoning_config_json, agent_config_json, "
+            "agent_command_json, environment_json, verifier_json, execution_limits_json, "
+            "condition_order_mode, seed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                spec["id"], spec["review_id"], spec["experience_id"], spec["proposal_id"],
+                spec["content_revision"], spec["policy_content"], spec["policy_content_hash"],
+                spec["placement_type"], spec["target_agent"], spec.get("target_override"),
+                spec.get("scope_type"), spec.get("scope_value"), spec["repo_root"], spec["repo_commit"],
+                _json(spec["task_spec"]), spec.get("agent_name"), spec.get("agent_version"),
+                spec.get("model_name"), spec.get("model_version"), _json(spec.get("reasoning_config")),
+                _json(spec.get("agent_config")), _json(spec.get("agent_command")),
+                _json(spec["environment"]), _json(spec["verifiers"]), _json(spec.get("execution_limits")),
+                spec["condition_order_mode"], spec.get("seed"), now,
+            ),
+        )
+
+    def get_evaluation_spec(self, evaluation_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM evaluation_specs WHERE id = ?", (evaluation_id,))
+
+    def list_evaluation_specs(self) -> list[Any]:
+        return self.db.query(
+            "SELECT es.*, "
+            "(SELECT COUNT(*) FROM evaluation_runs r WHERE r.evaluation_id = es.id AND r.condition = 'baseline') AS repetitions, "
+            "(SELECT MAX(ec.created_at) FROM evaluation_comparisons ec WHERE ec.evaluation_id = es.id) AS last_compared_at "
+            "FROM evaluation_specs es ORDER BY es.created_at DESC"
+        )
+
+    def next_evaluation_repetition(self, evaluation_id: str) -> int:
+        row = self.db.query_one(
+            "SELECT COALESCE(MAX(repetition_index), 0) AS v FROM evaluation_runs WHERE evaluation_id = ?",
+            (evaluation_id,),
+        )
+        return int(row["v"]) + 1
+
+    def record_evaluation_run(self, run: dict[str, Any]) -> None:
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO evaluation_runs("
+                "id, evaluation_id, repetition_index, condition, order_position, status, error_reason, "
+                "started_at, ended_at, duration_ms, apply_outcome, agent_exit_code, agent_timed_out, "
+                "agent_stdout_excerpt, agent_stderr_excerpt, metrics_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run["id"], run["evaluation_id"], run["repetition_index"], run["condition"],
+                    run["order_position"], run["status"], run.get("error_reason"),
+                    run["started_at"], run.get("ended_at"), run.get("duration_ms"),
+                    run.get("apply_outcome"), run.get("agent_exit_code"),
+                    int(bool(run.get("agent_timed_out"))), run.get("agent_stdout_excerpt"),
+                    run.get("agent_stderr_excerpt"), _json(run.get("metrics") or {}), now,
+                ),
+            )
+            for result in run.get("verifier_results") or []:
+                self.db.execute(
+                    "INSERT INTO evaluation_verifier_results("
+                    "run_id, checker_name, command_json, exit_code, passed, timed_out, duration_ms, "
+                    "stdout_excerpt, stderr_excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run["id"], result["name"], _json(result["command"]), result.get("exit_code"),
+                        int(bool(result["passed"])), int(bool(result.get("timed_out"))),
+                        result.get("duration_ms"), result.get("stdout_excerpt"),
+                        result.get("stderr_excerpt"), now,
+                    ),
+                )
+
+    def get_evaluation_run(self, run_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM evaluation_runs WHERE id = ?", (run_id,))
+
+    def list_evaluation_runs(self, evaluation_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_runs WHERE evaluation_id = ? "
+            "ORDER BY repetition_index, order_position", (evaluation_id,)
+        )
+
+    def list_verifier_results(self, run_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_verifier_results WHERE run_id = ? ORDER BY id", (run_id,)
+        )
+
+    def record_evaluation_comparison(self, comparison: dict[str, Any]) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO evaluation_comparisons("
+                "id, evaluation_id, repetition_index, baseline_run_id, candidate_run_id, outcome, "
+                "invalid_reason, task_success_delta, regression_count, regression_details_json, "
+                "changed_checks_json, metrics_delta_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    comparison["id"], comparison["evaluation_id"], comparison["repetition_index"],
+                    comparison.get("baseline_run_id"), comparison.get("candidate_run_id"),
+                    comparison["outcome"], comparison.get("invalid_reason"),
+                    comparison.get("task_success_delta"), comparison.get("regression_count", 0),
+                    _json(comparison.get("regression_details") or []),
+                    _json(comparison.get("changed_checks") or []),
+                    _json(comparison.get("metrics_delta") or {}), _now(),
+                ),
+            )
+
+    def list_evaluation_comparisons(self, evaluation_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_comparisons WHERE evaluation_id = ? ORDER BY repetition_index",
+            (evaluation_id,),
+        )
+
+    def evaluation_history(self, evaluation_id: str) -> dict[str, Any] | None:
+        spec = self.get_evaluation_spec(evaluation_id)
+        if spec is None:
+            return None
+        runs = [dict(r) for r in self.list_evaluation_runs(evaluation_id)]
+        for run in runs:
+            run["verifier_results"] = [dict(v) for v in self.list_verifier_results(run["id"])]
+        comparisons = [dict(c) for c in self.list_evaluation_comparisons(evaluation_id)]
+        return {"spec": dict(spec), "runs": runs, "comparisons": comparisons}
+
 
 def rows_to_dicts(rows: Iterable[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
