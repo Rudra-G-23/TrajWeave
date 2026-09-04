@@ -10,6 +10,7 @@ self-heal from the marker).
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,35 @@ def _now() -> str:
 
 def _marker_path(root: Path) -> Path:
     return root / REPO_DIR_NAME / REPO_CONFIG_NAME
+
+
+def _shared_system_roots() -> set[Path]:
+    """Directories that can never legitimately be a single project's root.
+
+    The OS temp directory and the filesystem root are shared scratch space -
+    every unrelated process on the machine may read/write there. If a marker
+    or ``.git`` ever ends up directly at one of these paths (e.g. someone ran
+    ``trajweave init`` from ``/tmp`` by mistake), an ancestor walk-up from any
+    nested temp path (including pytest's ``tmp_path``) would otherwise treat
+    the whole machine's scratch space as one tracked project.
+    """
+
+    roots: set[Path] = set()
+    try:
+        roots.add(Path(tempfile.gettempdir()).resolve())
+    except (OSError, RuntimeError):
+        pass
+    return roots
+
+
+def _is_unsafe_project_root(root: Path) -> bool:
+    try:
+        resolved = root.resolve()
+    except (OSError, RuntimeError):
+        return False
+    if resolved == Path(resolved.anchor):
+        return True
+    return resolved in _shared_system_roots()
 
 
 def find_marker_dir(start: str | Path) -> Path | None:
@@ -90,6 +120,11 @@ class ProjectRegistry:
                 )
 
         root = root.resolve()
+        if _is_unsafe_project_root(root):
+            raise RepoNotFoundError(
+                f"{root} is a shared system directory, not a project repository; "
+                "run 'trajweave init' from your project's own repo root."
+            )
         project_id = project_id_for_root(root)
         resolved_name = name or root.name
         git = read_git_info(root)
@@ -150,6 +185,8 @@ class ProjectRegistry:
         if root is None:
             return None
         root = root.resolve()
+        if _is_unsafe_project_root(root):
+            return None
 
         project_id = project_id_for_root(root)
         db_row = self.repo.get_project(project_id) or self.repo.get_project_by_root(str(root))
