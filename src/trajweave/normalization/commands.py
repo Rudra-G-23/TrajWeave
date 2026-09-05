@@ -3,6 +3,11 @@
 Used to derive the ``test_*`` / ``lint_*`` / ``build_*`` event families from a
 plain ``command`` event. Heuristic and intentionally shallow - when in doubt we
 return :data:`CommandKind.OTHER` and emit only a generic ``command`` event.
+
+Token matching is deliberately conservative (Stage 4 finding): a single-word
+tool name (``pytest``, ``make``, ``tsc`` ...) must appear as a real argv token,
+not as a substring of a path or inside a quoted string, and a segment that only
+*mentions* a tool (``echo``, ``which``, ``--version``) never counts as a run.
 """
 
 from __future__ import annotations
@@ -47,13 +52,70 @@ _PACKAGE_TOKENS = (
     "apt install", "brew install",
 )
 
+#: Leading words that only inspect/print - a segment starting with one of these
+#: is never a run of whatever it names (``echo "run pytest"``, ``which ruff``).
+_INSPECT_ONLY = frozenset(
+    {"echo", "printf", "which", "type", "true", "false", ":", "command", "man", "help"}
+)
+
+_ENV_ASSIGN = re.compile(r"[a-z_][a-z0-9_]*=.*")
+
+
+def _needle_re(needle: str) -> re.Pattern[str]:
+    """Multi-word needles match as a phrase; single-word needles must be a whole
+    argv token (not a path/identifier fragment)."""
+
+    if " " in needle:
+        return re.compile(re.escape(needle))
+    return re.compile(r"(?<![\w./-])" + re.escape(needle) + r"(?![\w-])")
+
+
+def _compile(tokens: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    return tuple(_needle_re(t) for t in tokens)
+
+
+_TEST_RE = _compile(_TEST_TOKENS)
+_LINT_RE = _compile(_LINT_TOKENS)
+_BUILD_RE = _compile(_BUILD_TOKENS)
+_PACKAGE_RE = _compile(_PACKAGE_TOKENS)
+
 
 def _normalize(command: str) -> str:
     return re.sub(r"\s+", " ", command.strip().lower())
 
 
+def _strip_literals(seg: str) -> str:
+    """Blank out quoted spans so a tool named inside a string is not a run."""
+
+    seg = re.sub(r"\"[^\"]*\"", " ", seg)
+    seg = re.sub(r"'[^']*'", " ", seg)
+    return seg
+
+
 def _matches(haystack: str, needles: tuple[str, ...]) -> bool:
     return any(n in haystack for n in needles)
+
+
+def _matches_re(haystack: str, needle_res: tuple[re.Pattern[str], ...]) -> bool:
+    return any(r.search(haystack) for r in needle_res)
+
+
+def _runnable_segments(segments: list[str]) -> list[str]:
+    """Segments that actually execute a tool, with quoted text removed and
+    inspect-only / ``--version`` / ``--help`` segments dropped."""
+
+    out: list[str] = []
+    for seg in segments:
+        toks = seg.split()
+        while toks and _ENV_ASSIGN.fullmatch(toks[0]):
+            toks = toks[1:]
+        first = toks[0].strip("()") if toks else ""
+        if first in _INSPECT_ONLY:
+            continue
+        if "--version" in seg or "--help" in seg:
+            continue
+        out.append(_strip_literals(seg))
+    return out
 
 
 def classify_command(command: str | None, parsed_hint: str | None = None) -> CommandKind:
@@ -74,17 +136,18 @@ def classify_command(command: str | None, parsed_hint: str | None = None) -> Com
     segments = re.split(r"&&|\|\||;|\|", norm)
     segments = [s.strip() for s in segments if s.strip()] or [norm]
 
-    for seg in segments:
-        if _matches(seg, _TEST_TOKENS):
+    runnable = _runnable_segments(segments)
+    for seg in runnable:
+        if _matches_re(seg, _TEST_RE):
             return CommandKind.TEST
-    for seg in segments:
-        if _matches(seg, _LINT_TOKENS):
+    for seg in runnable:
+        if _matches_re(seg, _LINT_RE):
             return CommandKind.LINT
-    for seg in segments:
-        if _matches(seg, _BUILD_TOKENS):
+    for seg in runnable:
+        if _matches_re(seg, _BUILD_RE):
             return CommandKind.BUILD
-    for seg in segments:
-        if _matches(seg, _PACKAGE_TOKENS):
+    for seg in runnable:
+        if _matches_re(seg, _PACKAGE_RE):
             return CommandKind.PACKAGE
 
     if parsed_hint == "read":
