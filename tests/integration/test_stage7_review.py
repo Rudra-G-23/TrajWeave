@@ -97,6 +97,44 @@ def test_review_accept_preview_apply_and_history(tmp_path, monkeypatch, capsys):
     db.close()
 
 
+def test_apply_after_edit_writes_new_content_not_stale_already_applied(tmp_path, monkeypatch):
+    """Regression: after Edit+Accept+Preview, Apply must write the edited
+    content, not report 'already_applied' just because the freshly-rendered
+    output matches its own (equally fresh) preview record - that comparison
+    must be against what is actually on disk, not the preview's own hash."""
+
+    from trajweave.config.paths import get_paths
+    from trajweave.review.service import ReviewService
+    from trajweave.storage.database import Database
+    from trajweave.storage.repository import Repository
+
+    home = tmp_path / "home"
+    root = tmp_path / "repo"
+    home.mkdir()
+    monkeypatch.setenv("TRAJWEAVE_HOME", str(home))
+    _seed(home, root)
+    db = Database(home / "trajweave.db")
+    repo = Repository(db)
+    paths = get_paths(str(home))
+    service = ReviewService(repo, paths)
+
+    proposal_id = service.list()[0]["recommended_proposal_id"]
+    review_id = service.accept(proposal_id, agent="codex")
+    service.preview(review_id)
+    assert service.apply(review_id)["outcome"] == "applied"
+    first_content = (root / "AGENTS.md").read_text("utf-8")
+
+    service.edit(review_id, "a totally different edited body")
+    service.accept(review_id, agent="codex")
+    service.preview(review_id)
+    result = service.apply(review_id)
+    assert result["outcome"] == "applied"
+    second_content = (root / "AGENTS.md").read_text("utf-8")
+    assert second_content != first_content
+    assert "a totally different edited body" in second_content
+    db.close()
+
+
 def test_reject_defer_test_first_and_edit_do_not_write(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     root = tmp_path / "repo"

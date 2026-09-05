@@ -12,7 +12,7 @@ from trajweave.utils.logging import get_logger
 
 log = get_logger("storage")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _MIGRATIONS_PACKAGE = "trajweave.storage.migrations"
 
 
@@ -27,6 +27,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (4, "0004_review.sql"),
     (5, "0005_review_variants.sql"),
     (6, "0006_evaluation.sql"),
+    (7, "0007_lifecycle.sql"),
 ]
 
 
