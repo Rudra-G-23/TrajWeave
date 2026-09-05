@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# TrajWeave opt-in marker (should not be committed from within this repo)
+.trajweave/
