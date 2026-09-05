@@ -28,7 +28,8 @@ Stage 8 evaluation is not included.
 - **Local only.** Everything is written under `~/.trajweave/` (override with
   `TRAJWEAVE_HOME`). Nothing is sent anywhere.
 - **Repository policy is protected by default.** Registration writes only the
-  small opt-in marker `<repo>/.trajweave/project.json`. Stage 7 can update one
+  small opt-in marker `<repo>/.trajweave/project.json` (and adds `.trajweave/`
+  to the repo's `.gitignore` so the marker dir is never committed). Stage 7 can update one
   explicitly selected managed block in `AGENTS.md`, `CLAUDE.md`, or a Skill
   only after Accept, Preview, and explicit Apply. It never regenerates an
   entire policy file or touches Git history.
@@ -80,7 +81,7 @@ re-parsed and its trajectory is replaced **in place** (its `TW-` id is kept).
 
 | Command | Purpose |
 | --- | --- |
-| `trajweave init [PATH] [--name NAME]` | Register the repository containing `PATH` (default: cwd). Idempotent. Writes `<repo>/.trajweave/project.json` and a row in the global DB. |
+| `trajweave init [PATH] [--name NAME]` | Register the repository containing `PATH` (default: cwd). Idempotent. Writes `<repo>/.trajweave/project.json`, a row in the global DB, and a `.trajweave/` entry in `<repo>/.gitignore` (creating the file if needed). |
 | `trajweave projects [--json]` | List registered projects, their status, and trajectory counts. |
 | `trajweave import [--all] [--agent codex\|claude] [--project PATH] [--dry-run] [--verbose] [--json]` | Discover, route, parse, normalize, dedupe and store sessions. |
 | `trajweave sessions [--agent ...] [--status ...] [--json]` | List every discovered source session and its import status. |
