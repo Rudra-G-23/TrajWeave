@@ -262,7 +262,10 @@ class ReviewService:
             review_id=review["id"],
         )
         built = build_preview(target=spec, experience_id=payload["proposal"]["experience_id"], review_id=review["id"], content=preview_data["proposed_content"])
-        already_applied = built.target_hash is not None and built.output_hash == preview_data["output_hash"]
+        # Whether the file on disk *right now* already has the desired content -
+        # not whether this render matches the (possibly stale) preview record,
+        # which would be true even on a first write for unchanged content.
+        already_applied = built.target_hash is not None and built.before == built.after
         if not already_applied and (built.target_hash != preview_data["target_hash"] or built.output_hash != preview_data["output_hash"]):
             raise ReviewError("preview is stale or target configuration changed; create a new preview")
         if dry_run:

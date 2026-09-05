@@ -28,6 +28,8 @@ from urllib.parse import parse_qs, urlparse
 from trajweave import __version__
 from trajweave.config.paths import TrajWeavePaths
 from trajweave.evaluation import EvaluationError, EvaluationService
+from trajweave.lifecycle.errors import LifecycleError
+from trajweave.lifecycle.service import LifecycleService
 from trajweave.review.service import ReviewError, ReviewService
 from trajweave.review.targets import SafetyError
 from trajweave.storage.database import Database
@@ -420,6 +422,21 @@ def build_evaluation(repo: Repository, evaluation_id: str, db_path: Path) -> dic
         return None
 
 
+def build_lifecycle_policies(repo: Repository, db_path: Path) -> dict[str, Any]:
+    try:
+        rows = LifecycleService(repo, TrajWeavePaths(db_path.parent)).list()
+    except (AttributeError, sqlite3.OperationalError):
+        return {"policies": [], "schema_ok": False}
+    return {"policies": rows, "schema_ok": True}
+
+
+def build_lifecycle_policy(repo: Repository, policy_id: str, db_path: Path) -> dict[str, Any] | None:
+    try:
+        return LifecycleService(repo, TrajWeavePaths(db_path.parent)).show(policy_id)
+    except (LifecycleError, AttributeError, sqlite3.OperationalError):
+        return None
+
+
 def build_debug_sessions(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
     def first(name: str) -> str | None:
         vals = params.get(name)
@@ -525,23 +542,35 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
         def _post_route(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
-            if not path.startswith("/api/reviews/"):
-                return self._error(404, "not found")
-            suffix = path[len("/api/reviews/"):]
-            parts = suffix.split("/")
-            if len(parts) != 2 or not parts[0] or not parts[1]:
-                return self._error(404, "not found")
-            value, action = parts
+            if path.startswith("/api/reviews/"):
+                return self._post_review(path[len("/api/reviews/"):])
+            if path.startswith("/api/lifecycle/"):
+                return self._post_lifecycle(path[len("/api/lifecycle/"):])
+            return self._error(404, "not found")
+
+        def _read_json_body(self) -> dict[str, Any] | None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length > 1_000_000:
-                    return self._error(413, "request body too large")
+                    self._error(413, "request body too large")
+                    return None
                 raw = self.rfile.read(length) if length else b"{}"
                 body = json.loads(raw.decode("utf-8"))
                 if not isinstance(body, dict):
                     raise ValueError("request body must be a JSON object")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-                return self._error(400, str(exc))
+                self._error(400, str(exc))
+                return None
+            return body
+
+        def _post_review(self, suffix: str) -> None:
+            parts = suffix.split("/")
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                return self._error(404, "not found")
+            value, action = parts
+            body = self._read_json_body()
+            if body is None:
+                return None
 
             paths = TrajWeavePaths(db_path.parent).ensure()
             try:
@@ -569,6 +598,70 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
             except ReviewError as exc:
                 return self._error(409, str(exc))
             except (ValueError, SafetyError) as exc:
+                return self._error(422, str(exc))
+            return self._json(result)
+
+        def _post_lifecycle(self, suffix: str) -> None:
+            """Fixed whitelist of Stage 9 mutation actions. Every write still
+            goes through LifecycleService, never a shortcut in this handler -
+            there is no auto-apply from a GET or from page load."""
+
+            parts = suffix.split("/")
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                return self._error(404, "not found")
+            value, action = parts
+            body = self._read_json_body()
+            if body is None:
+                return None
+
+            paths = TrajWeavePaths(db_path.parent).ensure()
+            try:
+                with Database(db_path) as db:
+                    service = LifecycleService(Repository(db), paths)
+                    if action == "recommend":
+                        result = service.recommend(value)
+                    elif action == "rewrite":
+                        vid = service.rewrite(value, str(body.get("content") or ""), reason=body.get("reason"))
+                        result = {"version_id": vid}
+                    elif action == "disable":
+                        service.disable(value, reason=body.get("reason"))
+                        result = {"policy_id": value, "status": "disabled"}
+                    elif action == "enable":
+                        service.enable(value, reason=body.get("reason"))
+                        result = {"policy_id": value, "status": "active"}
+                    elif action == "prune":
+                        service.prune(value, reason=body.get("reason"))
+                        result = {"policy_id": value, "status": "pruned"}
+                    elif action == "rollback":
+                        vid = service.rollback(value, int(body.get("version_number")), reason=body.get("reason"))
+                        result = {"version_id": vid}
+                    elif action == "preview":
+                        result = service.preview(
+                            value, project_root=body.get("project_root"),
+                            target_agent=body.get("target_agent"), target_override=body.get("target"),
+                        )
+                    elif action == "apply":
+                        result = service.apply(
+                            value, project_root=body.get("project_root"), dry_run=bool(body.get("dry_run", False)),
+                            target_agent=body.get("target_agent"), target_override=body.get("target"),
+                            confirm_global=bool(body.get("confirm_global", False)),
+                        )
+                    elif action == "accept-recommendation":
+                        result = {"result": service.accept_recommendation(
+                            value, confirm_global=bool(body.get("confirm_global", False)),
+                            target_placement=body.get("target_placement"),
+                        )}
+                    elif action == "reject-recommendation":
+                        service.reject_recommendation(value, reason=body.get("reason"))
+                        result = {"recommendation_id": value, "status": "rejected"}
+                    elif action == "defer-recommendation":
+                        service.defer_recommendation(value, reason=body.get("reason"))
+                        result = {"recommendation_id": value, "status": "deferred"}
+                    else:
+                        return self._error(404, "unknown lifecycle action")
+            except LifecycleError as exc:
+                return self._error(409, str(exc))
+            except (ValueError, SafetyError, TypeError) as exc:
                 return self._error(422, str(exc))
             return self._json(result)
 
@@ -639,6 +732,12 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 value = path[len("/api/evals/"):]
                 payload = build_evaluation(repo, value, db_path)
                 return self._json(payload) if payload else self._error(404, "no such evaluation")
+            if path == "/api/lifecycle":
+                return self._json(build_lifecycle_policies(repo, db_path))
+            if path.startswith("/api/lifecycle/"):
+                value = path[len("/api/lifecycle/"):]
+                payload = build_lifecycle_policy(repo, value, db_path)
+                return self._json(payload) if payload else self._error(404, "no such policy")
             if path == "/api/debug/sessions":
                 return self._json(build_debug_sessions(repo, params))
             if path.startswith("/api/trajectories/"):
@@ -666,6 +765,8 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 return self._json({"reviews": [], "schema_ok": False})
             if path == "/api/evals":
                 return self._json({"evaluations": [], "schema_ok": False})
+            if path == "/api/lifecycle":
+                return self._json({"policies": [], "schema_ok": False})
             if path == "/api/debug/sessions":
                 return self._json({"sessions": []})
             self._error(404, "no database yet")

@@ -264,6 +264,133 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_eval.set_defaults(func=lambda _a: (p_eval.print_help() or 0))
 
+    p_life = sub.add_parser(
+        "lifecycle", help="Stage 9: manage a reviewed policy's lifecycle using Stage 8 evidence"
+    )
+    life_sub = p_life.add_subparsers(dest="lifecycle_command", metavar="<subcommand>")
+
+    lf_list = life_sub.add_parser("list", help="list logical policies")
+    lf_list.add_argument("--status", choices=["active", "disabled", "pruned"])
+    lf_list.add_argument("--json", action="store_true")
+    lf_list.set_defaults(func=cmd_lifecycle_list)
+
+    lf_show = life_sub.add_parser("show", help="show one policy: versions, lineage, evidence, recommendations")
+    lf_show.add_argument("policy_id")
+    lf_show.add_argument("--json", action="store_true")
+    lf_show.set_defaults(func=cmd_lifecycle_show)
+
+    lf_history = life_sub.add_parser("history", help="alias for 'show' - full append-only history")
+    lf_history.add_argument("policy_id")
+    lf_history.add_argument("--json", action="store_true")
+    lf_history.set_defaults(func=cmd_lifecycle_show)
+
+    lf_adopt = life_sub.add_parser("adopt", help="bootstrap a logical policy (V1) from an accepted Stage 7 review")
+    lf_adopt.add_argument("review_id")
+    lf_adopt.add_argument("--json", action="store_true")
+    lf_adopt.set_defaults(func=cmd_lifecycle_adopt)
+
+    lf_recommend = life_sub.add_parser("recommend", help="compute a deterministic, evidence-backed recommendation")
+    lf_recommend.add_argument("policy_id")
+    lf_recommend.add_argument("--json", action="store_true")
+    lf_recommend.set_defaults(func=cmd_lifecycle_recommend)
+
+    lf_dupes = life_sub.add_parser("duplicates", help="scan active policies for byte-identical merge candidates")
+    lf_dupes.add_argument("--json", action="store_true")
+    lf_dupes.set_defaults(func=cmd_lifecycle_duplicates)
+
+    lf_rewrite = life_sub.add_parser("rewrite", help="create a new version with rewritten content")
+    lf_rewrite.add_argument("policy_id")
+    lf_rewrite.add_argument("--content", help="the new policy text")
+    lf_rewrite.add_argument("--file", help="read the new policy text from a file")
+    lf_rewrite.add_argument("--reason")
+    lf_rewrite.add_argument("--json", action="store_true")
+    lf_rewrite.set_defaults(func=cmd_lifecycle_rewrite)
+
+    for name, help_text in (("promote", "widen scope"), ("demote", "narrow scope")):
+        cmd = life_sub.add_parser(name, help=f"create a new version to {help_text} (evidence-backed, reversible)")
+        cmd.add_argument("policy_id")
+        cmd.add_argument("--target-placement", choices=["global_rule", "project_rule", "scoped_rule", "skill"])
+        cmd.add_argument("--scope-type")
+        cmd.add_argument("--scope-value")
+        cmd.add_argument("--target-agent", choices=["codex", "claude"])
+        cmd.add_argument("--target", help="explicit relative target path override")
+        cmd.add_argument("--reason")
+        if name == "promote":
+            cmd.add_argument(
+                "--confirm-global", action="store_true",
+                help="required explicit approval to promote a policy to global scope",
+            )
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func=cmd_lifecycle_promote if name == "promote" else cmd_lifecycle_demote)
+
+    lf_merge = life_sub.add_parser("merge", help="combine two overlapping policies into a new one")
+    lf_merge.add_argument("policy_a")
+    lf_merge.add_argument("policy_b")
+    lf_merge.add_argument("--content", help="explicit merged text (default: concatenate both)")
+    lf_merge.add_argument("--allow-cross-scope", action="store_true")
+    lf_merge.add_argument("--reason")
+    lf_merge.add_argument("--json", action="store_true")
+    lf_merge.set_defaults(func=cmd_lifecycle_merge)
+
+    lf_split = life_sub.add_parser("split", help="split an overly broad policy into narrower children")
+    lf_split.add_argument("policy_id")
+    lf_split.add_argument(
+        "--children-file", required=True,
+        help="path to a JSON file: a list of {content, placement_type, scope_type, scope_value} objects",
+    )
+    lf_split.add_argument("--reason")
+    lf_split.add_argument("--json", action="store_true")
+    lf_split.set_defaults(func=cmd_lifecycle_split)
+
+    for name in ("disable", "enable", "prune"):
+        cmd = life_sub.add_parser(name, help=f"{name} a policy (reversible except prune)")
+        cmd.add_argument("policy_id")
+        cmd.add_argument("--reason")
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func={"disable": cmd_lifecycle_disable, "enable": cmd_lifecycle_enable, "prune": cmd_lifecycle_prune}[name])
+
+    lf_rollback = life_sub.add_parser("rollback", help="create a new version restoring an exact prior version")
+    lf_rollback.add_argument("policy_id")
+    lf_rollback.add_argument("version_number", type=int)
+    lf_rollback.add_argument("--reason")
+    lf_rollback.add_argument("--json", action="store_true")
+    lf_rollback.set_defaults(func=cmd_lifecycle_rollback)
+
+    lf_preview = life_sub.add_parser("preview", help="render the current version's exact file diff without writing")
+    lf_preview.add_argument("policy_id")
+    lf_preview.add_argument("--project", metavar="PATH", help="registered project root (for project/scoped/skill placements)")
+    lf_preview.add_argument("--target-agent", choices=["codex", "claude"])
+    lf_preview.add_argument("--target")
+    lf_preview.add_argument("--json", action="store_true")
+    lf_preview.set_defaults(func=cmd_lifecycle_preview)
+
+    lf_apply = life_sub.add_parser("apply", help="explicitly write the current version to disk (Stage 7 safety reused)")
+    lf_apply.add_argument("policy_id")
+    lf_apply.add_argument("--project", metavar="PATH")
+    lf_apply.add_argument("--target-agent", choices=["codex", "claude"])
+    lf_apply.add_argument("--target")
+    lf_apply.add_argument("--dry-run", action="store_true")
+    lf_apply.add_argument("--confirm-global", action="store_true", help="required to apply a global_rule policy")
+    lf_apply.add_argument("--json", action="store_true")
+    lf_apply.set_defaults(func=cmd_lifecycle_apply)
+
+    for name in ("accept", "reject", "defer"):
+        cmd = life_sub.add_parser(f"{name}-recommendation", help=f"{name} an open lifecycle recommendation")
+        cmd.add_argument("recommendation_id")
+        if name == "accept":
+            cmd.add_argument("--confirm-global", action="store_true")
+            cmd.add_argument("--target-placement", choices=["global_rule", "project_rule", "scoped_rule", "skill"])
+        else:
+            cmd.add_argument("--reason")
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func={
+            "accept": cmd_lifecycle_accept_recommendation,
+            "reject": cmd_lifecycle_reject_recommendation,
+            "defer": cmd_lifecycle_defer_recommendation,
+        }[name])
+
+    p_life.set_defaults(func=lambda _a: (p_life.print_help() or 0))
+
     p_ui = sub.add_parser("ui", help="launch the local trajectory and review explorer")
     p_ui.add_argument(
         "--port", type=int, default=None,
@@ -1061,6 +1188,355 @@ def _read_placement_set(repo: Repository, experience_id: str) -> dict | None:
         "proposals": proposals,
         "evidence": list(by_occurrence.values()),
     }
+
+
+def _lifecycle_service(args: argparse.Namespace):
+    from trajweave.lifecycle.service import LifecycleService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, LifecycleService(Repository(db), paths)
+
+
+def cmd_lifecycle_list(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rows = service.list(status=args.status)
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No lifecycle policies yet. Run 'trajweave lifecycle adopt <review-id>'.")
+        return 0
+    print(f"{'POLICY':<20}  {'STATUS':<9}  {'VERSION':>7}  {'PLACEMENT':<13}  SCOPE")
+    for r in rows:
+        scope = _placement_scope({"scope_type": r.get("current_scope_type"), "scope_value": r.get("current_scope_value")})
+        print(f"{r['id']:<20}  {r['status']:<9}  {int(r.get('current_version_number') or 0):>7}  "
+              f"{(r.get('current_placement_type') or '-'):<13}  {scope}")
+    return 0
+
+
+def cmd_lifecycle_show(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        payload = service.show(args.policy_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+        return 0
+    policy = payload["policy"]
+    current = payload.get("current_version")
+    print(f"{policy['id']}  status={policy['status']}")
+    if current:
+        print(f"  version {current['version_number']}: {current['placement_type']} ({current['status']})")
+        print(f"  content : {current['content'][:200]}")
+    evidence = payload.get("evidence")
+    if evidence:
+        print(f"  evidence: {evidence['improved']} improved / {evidence['unchanged']} unchanged / "
+              f"{evidence['regressed']} regressed / {evidence['invalid']} invalid / {evidence['incomparable']} incomparable")
+    print(f"  versions: {len(payload['versions'])}  lineage edges: {len(payload['lineage'])}  "
+          f"recommendations: {len(payload['recommendations'])}")
+    for rec in payload["recommendations"]:
+        print(f"    [{rec['status']}] {rec['id']}: {rec['operation']} ({', '.join(rec['reason_codes']) or 'n/a'})")
+    for action in payload["actions"]:
+        print(f"    action {action['created_at']}: {action['action']} -> {action.get('to_status')}")
+    return 0
+
+
+def cmd_lifecycle_adopt(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        policy_id = service.adopt(args.review_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": policy_id})
+        return 0
+    print(f"{policy_id}: adopted from review {args.review_id}")
+    return 0
+
+
+def cmd_lifecycle_recommend(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rec = service.recommend(args.policy_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rec)
+        return 0
+    print(f"{rec['id']}: recommend {rec['operation']}  (strength={rec['strength']})")
+    print(f"  reasons: {', '.join(rec['reason_codes']) or 'n/a'}")
+    print(f"  {rec['explanation']}")
+    for note in rec.get("counter_evidence") or []:
+        print(f"  counter-evidence: {note}")
+    return 0
+
+
+def cmd_lifecycle_duplicates(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rows = service.duplicate_candidates()
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No duplicate-content policies detected.")
+        return 0
+    for row in rows:
+        print(f"DUPLICATE_POLICY: {', '.join(row['policy_ids'])}")
+    return 0
+
+
+def cmd_lifecycle_rewrite(args: argparse.Namespace) -> int:
+    content = args.content if args.content is not None else (Path(args.file).read_text("utf-8") if args.file else None)
+    if content is None:
+        log.error("--content or --file is required")
+        return 2
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.rewrite(args.policy_id, content, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: rewrite recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_promote(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.promote(
+            args.policy_id, target_placement=args.target_placement, scope_type=args.scope_type,
+            scope_value=args.scope_value, target_agent=args.target_agent, target_override=args.target,
+            confirm_global=args.confirm_global, reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: promote recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_demote(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.demote(
+            args.policy_id, target_placement=args.target_placement, scope_type=args.scope_type,
+            scope_value=args.scope_value, target_agent=args.target_agent, target_override=args.target,
+            reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: demote recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_merge(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        new_policy_id = service.merge(
+            args.policy_a, args.policy_b, content=args.content,
+            allow_cross_scope=args.allow_cross_scope, reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": new_policy_id})
+        return 0
+    print(f"{new_policy_id}: merge of {args.policy_a} + {args.policy_b} recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_split(args: argparse.Namespace) -> int:
+    try:
+        children = json.loads(Path(args.children_file).read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        log.error("could not read --children-file: %s", exc)
+        return 2
+    db, service = _lifecycle_service(args)
+    try:
+        child_ids = service.split(args.policy_id, children, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"child_policy_ids": child_ids})
+        return 0
+    print(f"split into {len(child_ids)} child polic{'y' if len(child_ids) == 1 else 'ies'} (created disabled):")
+    for cid in child_ids:
+        print(f"  {cid}")
+    return 0
+
+
+def _lifecycle_toggle(args: argparse.Namespace, action: str) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        getattr(service, action)(args.policy_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": args.policy_id, "action": action})
+        return 0
+    print(f"{args.policy_id}: {action}d")
+    return 0
+
+
+def cmd_lifecycle_disable(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "disable")
+
+
+def cmd_lifecycle_enable(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "enable")
+
+
+def cmd_lifecycle_prune(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "prune")
+
+
+def cmd_lifecycle_rollback(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.rollback(args.policy_id, args.version_number, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: rollback to version {args.version_number} recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_preview(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.preview(args.policy_id, project_root=args.project, target_agent=args.target_agent, target_override=args.target)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(result)
+        return 0
+    print(f"Preview: {result['target']['path']}")
+    print(result.get("unified_diff") or "(no changes)")
+    return 0
+
+
+def cmd_lifecycle_apply(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.apply(
+            args.policy_id, project_root=args.project, dry_run=args.dry_run,
+            target_agent=args.target_agent, target_override=args.target, confirm_global=args.confirm_global,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(result)
+        return 0
+    if args.dry_run:
+        print(f"Dry-run: {result['target_path']}")
+        print(result.get("unified_diff") or "(no changes)")
+        print("Writes: no")
+    else:
+        print(f"{result['outcome']}: {result['target_path']}")
+    return 0
+
+
+def cmd_lifecycle_accept_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.accept_recommendation(
+            args.recommendation_id, confirm_global=args.confirm_global, target_placement=args.target_placement,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"result": result})
+        return 0
+    print(f"{args.recommendation_id}: accepted -> {result}")
+    return 0
+
+
+def cmd_lifecycle_reject_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        service.reject_recommendation(args.recommendation_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"recommendation_id": args.recommendation_id, "status": "rejected"})
+        return 0
+    print(f"{args.recommendation_id}: rejected")
+    return 0
+
+
+def cmd_lifecycle_defer_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        service.defer_recommendation(args.recommendation_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"recommendation_id": args.recommendation_id, "status": "deferred"})
+        return 0
+    print(f"{args.recommendation_id}: deferred")
+    return 0
 
 
 def cmd_ui(args: argparse.Namespace) -> int:
