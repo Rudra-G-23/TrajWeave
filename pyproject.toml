@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trajweave"
-version = "0.3.0"
-description = "Local-first research substrate for coding-agent trajectory learning (Stage 0-3: data layer only)."
+version = "0.5.0"
+description = "Local-first research substrate for coding-agent trajectory learning (data layer, read-only explorer, deterministic experience extraction)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

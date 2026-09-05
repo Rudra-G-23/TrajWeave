@@ -187,3 +187,94 @@ The formal write-up is [`STAGE_4_REPORT.md`](./STAGE_4_REPORT.md).
 
 Everything from Session 1's out-of-scope list, plus: charts/analytics,
 column sorting, full-text search, parent/child linkage for sub-agents.
+
+---
+
+## Session 3 - Stage 5 deterministic experience extraction (2026-09-03)
+
+Formal write-up: [`STAGE_5_REPORT.md`](./STAGE_5_REPORT.md).
+
+### 1. Design interview first
+
+- Ran the `grill-me` protocol before writing code: 3 rounds, 22 numbered
+  decisions (pattern set, group-key scheme, confidence weights + saturation,
+  contradiction synthesis, incremental vs rebuild, id stability, review model,
+  LLM seam boundary, human-correction filter shape). All recommended answers
+  accepted.
+
+### 2. Schema (migration `0002_experience.sql`, `SCHEMA_VERSION` 1 -> 2)
+
+- `experience_occurrences`, `experiences`, `experience_evidence`,
+  `experience_extraction_state`, `experience_runs`. Forward-only, auto-applied.
+  Occurrence ids `O-000001` (stable, per (re)processed trajectory) /
+  `OC-000001` (synthesized contradictions, recomputed each run); experience
+  ids `E-0001` (stable, reused by `group_key`).
+
+### 3. `src/trajweave/experience/`
+
+- `corrections.py` - `is_meaningful_human_correction()` read-time filter for
+  bare `human_correction` turns (does **not** mutate stored events).
+- `signatures.py` - documented `error_signature()` normalizer.
+- `context.py` - file / command context classification, vendored-path check.
+- `confidence.py` - the exact scoring function
+  (`0.50*support_ratio + 0.25*recurrence + 0.15*cross_project + 0.10*recency`).
+- `detect.py` - four deterministic pattern types
+  (`failure_repair_success`, `human_correction_repair`, `repeated_failure`,
+  `file_change_pattern`); one occurrence per `(group_key, classification)` per
+  trajectory.
+- `grouping.py` - bucket by `group_key`, synthesize `fr::` contradictions,
+  candidate vs `needs_more_evidence` thresholds.
+- `summarize.py` - deterministic template summariser + unwired `LlmSummarizer`
+  seam (`use_llm_summary` set by nothing).
+- `extract.py` - orchestrator: hash-gated incremental detection, full-recompute
+  grouping, `experience_runs` bookkeeping, review annotations restored by
+  `group_key`.
+
+### 4. CLI + UI
+
+- `trajweave experiences extract | list | show | review`
+  (`cli/main.py`).
+- UI: **Experiences** list + **Experience detail** pages
+  (`ui/server.py` `/api/experiences[/<id>]`, `ui/static/*`). Evidence rows
+  deep-link to `#/session/<id>?range=<start>-<end>` with the event range
+  highlighted. Endpoint degrades to empty (not `500`) on a v1 DB. No review
+  controls in the browser - extraction and triage are CLI-only.
+
+### 5. Precision pass (real-data-driven false-positive analysis)
+
+- Tightened every rule that produced a bad row on the real corpus:
+  `human_correction_repair` now needs a *directive* correction + a checked
+  fail->pass; `file_change_pattern` cut to three schema transitions + a
+  passing check; `repeated_failure` gated by `_looks_diagnostic()` (rejects
+  `test exit n` and friends) with `_diagnostic_text()` recovering the real
+  error off the preceding `command` event; per-trajectory occurrence dedup.
+- Result on 254 real trajectories / 11,094 events: 30 occurrences, 21
+  clusters, **0 candidates**, 3 `needs_more_evidence`, 0 false positives,
+  ~0.6 s. Zero candidates is correct - only 25 sessions contain any failing
+  check and the strongest recurring signal spans 2 projects (`min_occurrences`
+  is 3, and was not lowered). The earlier loose detector produced 407
+  "occurrences" / 22 "candidates" of essentially pure noise on the same data.
+
+### 6. Tests (+107, total 213/213, 0 skipped)
+
+- 8 new unit files (`test_experience_{corrections,context,detect,grouping,
+  storage,signatures,confidence}.py`, `test_ui_experiences.py`), 2 integration
+  files (`test_experience_pipeline.py` incl. the brief's
+  migration-after-model-change + contradiction scenario,
+  `test_cli_experiences.py`). `test_storage.py` updated for `schema_version 2`.
+
+### 7. Stage 3 issues discovered (recorded, not fixed - out of scope)
+
+- Failure-outcome events carry only `"<kind> exit <code>"`; the real error text
+  is stranded on the preceding `command` event
+  (`adapters/claude.py:422`, `adapters/codex.py:360,464`).
+- `/compact`, `c`, bare `yes` are `human_correction`s (47 of 322 on real data).
+- `error_signature` lexical near-duplicates fragment one real pattern into
+  multiple `rf::` keys (the strongest argument for the LLM merge seam).
+- Absolute paths still appear inside free-text summaries.
+
+### 8. Hard boundary (unchanged)
+
+No `AGENTS.md` / `CLAUDE.md` touched, no skill, no rule written into any repo,
+no project source changed, no transcript copied/modified, no network, no paid
+API, no cloud. New runtime dependencies: none. `trajweave` `0.3.0` -> `0.5.0`.
