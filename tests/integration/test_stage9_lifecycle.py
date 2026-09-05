@@ -797,8 +797,12 @@ def test_apply_rejects_deleted_repository(home_and_repo):
     policy_id = service.adopt(review_id)
     service.preview(policy_id, project_root=str(root))
     import shutil
+
+    from trajweave.review.targets import SafetyError
+
     shutil.rmtree(root)
-    with pytest.raises(Exception):
+    # the repo root no longer resolves, so target resolution must refuse to apply
+    with pytest.raises((SafetyError, LifecycleError, OSError)):
         service.apply(policy_id, project_root=str(root))
     db.close()
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from tests.conftest import make_codex_session
+
 from trajweave.cli.main import main
 
 pytestmark = pytest.mark.integration

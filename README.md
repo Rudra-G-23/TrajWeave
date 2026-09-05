@@ -1,5 +1,7 @@
 # TrajWeave
 
+[![CI](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml)
+
 Local-first research substrate for **coding-agent trajectory learning**.
 
 TrajWeave observes your Codex CLI and Claude Code sessions, figures out which
@@ -150,13 +152,27 @@ marker). Paths inside events are stored **relative to the repository root**
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest                       # unit + integration
-pytest -m "not integration"  # unit only
+pip install -e ".[dev]"       # or: uv sync --extra dev
+pytest                        # unit + integration
+pytest -m "not integration"   # unit only
+ruff check .                  # lint (config in pyproject.toml)
 ```
 
 Test fixtures live in `tests/fixtures/{codex,claude}/` and are small, sanitized,
 synthetic sessions - no real private transcripts are committed.
+
+## Contributing
+
+Contributions are welcome. Start with [`CONTRIBUTING.md`](./CONTRIBUTING.md) for
+the full development workflow, and please read the
+[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
+
+- **Bugs / features:** open an issue via the
+  [issue forms](https://github.com/Rudra-G-23/TrajWeave/issues/new/choose).
+- **Security vulnerabilities:** follow [`SECURITY.md`](./SECURITY.md) - do not
+  file a public issue.
+- **Pull requests:** every PR runs the test suite on Python 3.10 - 3.13 plus
+  `ruff check`; see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 ## Layout
 

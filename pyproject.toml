@@ -16,6 +16,10 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
 
@@ -23,7 +27,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.6"]
 
 [project.scripts]
 trajweave = "trajweave.cli.main:main"
@@ -42,3 +46,14 @@ addopts = "-ra"
 markers = [
     "integration: end-to-end tests that build a temp git repo and run the import pipeline",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# E501 (line length) is advisory only: a large amount of pre-existing code was
+# written to a wider budget, so it is reported by editors but not enforced in CI.
+ignore = ["E501"]

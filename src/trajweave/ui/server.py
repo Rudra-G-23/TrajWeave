@@ -18,11 +18,12 @@ import sqlite3
 import threading
 import time
 import webbrowser
+from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from trajweave import __version__

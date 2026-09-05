@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 from typing import Any
 
 from trajweave.config.paths import TrajWeavePaths
@@ -41,6 +40,16 @@ def _hash_text(value: str) -> str:
 
 
 class ReviewService:
+    """Owns the Stage 7 review state machine and is the single read-model the
+    CLI and the UI share.
+
+    A review moves through accept / reject / defer / test_first / edit / choose
+    actions over a frozen Stage 6 proposal. Rendering a managed policy block is
+    allowed once a review is accepted, but nothing is ever written to a file
+    without a separate, explicit :meth:`apply` of a preview that still matches
+    its target hash.
+    """
+
     def __init__(self, repo: Repository, paths: TrajWeavePaths):
         self.repo = repo
         self.paths = paths

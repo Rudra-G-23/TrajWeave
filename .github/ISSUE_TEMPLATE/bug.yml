@@ -1,0 +1,119 @@
+name: Bug report
+description: Something in TrajWeave does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for taking the time to file a bug. Please do **not** include real
+        transcripts, API keys, tokens, or other secrets - use a small synthetic
+        example instead. For security vulnerabilities, follow SECURITY.md rather
+        than this form.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am on the latest released version (or `main`) and the issue still happens.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
+        - label: This report contains no secrets or real private transcript content.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran, in order.
+      placeholder: |
+        1. cd into a fresh git repo
+        2. trajweave init
+        3. trajweave import --all
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: minimal-repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        If possible, a minimal synthetic transcript or script that triggers the
+        bug. Keep it small and sanitized.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: trajweave-version
+    attributes:
+      label: TrajWeave version
+      description: Output of `trajweave --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Ubuntu 24.04, macOS 14.5, Windows 11
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - "pip install -e . (from source)"
+        - "pip install -e \".[dev]\" (from source, with dev extras)"
+        - "uv sync"
+        - "pip install trajweave (from PyPI)"
+        - "Other (describe below)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: >
+        Run the failing command with `-v` and paste the output. Remove any
+        sensitive values first.
+      render: shell
+    validations:
+      required: false

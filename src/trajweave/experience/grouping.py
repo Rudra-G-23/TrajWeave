@@ -18,17 +18,21 @@ from datetime import datetime
 from trajweave.experience.confidence import compute_confidence
 from trajweave.experience.config import ExperienceConfig
 from trajweave.experience.models import (
-    PATTERN_FAILURE_REPAIR,
-    PATTERN_RANK,
     AMBIGUOUS,
     CONTRADICTION,
+    PATTERN_FAILURE_REPAIR,
+    PATTERN_RANK,
     STATUS_CANDIDATE,
     STATUS_NEEDS_MORE,
     SUPPORT,
     ConfidenceBreakdown,
     Occurrence,
 )
-from trajweave.experience.summarize import DeterministicSummarizer, SummaryInput, Summary
+from trajweave.experience.summarize import (
+    DeterministicSummarizer,
+    Summary,
+    SummaryInput,
+)
 
 
 @dataclass

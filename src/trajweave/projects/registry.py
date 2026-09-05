@@ -100,6 +100,14 @@ class ResolvedProject:
 
 
 class ProjectRegistry:
+    """Implements repository opt-in (``trajweave init``) and the import
+    hot-path lookup that decides whether a session belongs to a tracked project.
+
+    Registration writes both a ``<repo>/.trajweave/project.json`` marker and a
+    DB row; either one alone is enough to keep a repo tracked, so history
+    survives the repo being deleted and a wiped DB self-heals from the marker.
+    """
+
     def __init__(self, repo: Repository):
         self.repo = repo
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import urllib.error
 import urllib.request
@@ -206,10 +207,11 @@ def test_debug_ledger(tmp_path):
 
 def test_server_is_read_only(tmp_path):
     _seed_db(tmp_path / "tw.db")
-    with running(tmp_path / "tw.db") as base:
+    with running(tmp_path / "tw.db"):
         # a GET can't write, but assert the connection itself refuses writes
         from trajweave.ui.server import reader
 
         with reader(tmp_path / "tw.db") as repo:
-            with pytest.raises(Exception):
+            # the reader connection is opened read-only, so any write must fail
+            with pytest.raises(sqlite3.OperationalError):
                 repo.db.conn.execute("DELETE FROM projects")

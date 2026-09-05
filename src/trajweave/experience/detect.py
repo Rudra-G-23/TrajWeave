@@ -20,18 +20,23 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from trajweave.experience.config import ExperienceConfig
 from trajweave.experience.context import command_context, file_context, is_vendored
-from trajweave.experience.corrections import _DIRECTIVE_WORDS, _TOKEN_RE, is_meaningful_human_correction
+from trajweave.experience.corrections import (
+    _DIRECTIVE_WORDS,
+    _TOKEN_RE,
+    is_meaningful_human_correction,
+)
 from trajweave.experience.models import (
+    AMBIGUOUS,
     PATTERN_FAILURE_REPAIR,
     PATTERN_FILE_CHANGE,
     PATTERN_HUMAN_CORRECTION_REPAIR,
     PATTERN_REPEATED_FAILURE,
-    AMBIGUOUS,
     SUPPORT,
     Occurrence,
 )

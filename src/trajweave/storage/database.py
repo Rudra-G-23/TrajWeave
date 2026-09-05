@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
-from typing import Iterator
 
 from trajweave.utils.logging import get_logger
 
@@ -56,7 +56,7 @@ class Database:
         except sqlite3.Error:  # pragma: no cover
             pass
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         return self
 
     def __exit__(self, *exc: object) -> None:

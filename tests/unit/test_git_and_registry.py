@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from trajweave.projects.git import find_repo_root, read_git_info
-from trajweave.projects.registry import ProjectRegistry, RepoNotFoundError, project_id_for_root
+from trajweave.projects.registry import (
+    ProjectRegistry,
+    RepoNotFoundError,
+    project_id_for_root,
+)
 from trajweave.storage.database import Database
 from trajweave.storage.repository import Repository
 

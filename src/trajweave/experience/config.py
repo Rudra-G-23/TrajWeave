@@ -13,6 +13,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ExperienceConfig:
+    """Immutable set of thresholds that govern Stage 5 extraction.
+
+    Defaults are calibrated against the real local dataset; every field is
+    overridable from the ``trajweave experiences extract`` CLI. Call
+    :meth:`validated` to get an instance with the invariants enforced.
+    """
+
     #: An experience needs at least this many occurrences to become a
     #: ``candidate``. Exactly ``min_occurrences - 1`` -> ``needs_more_evidence``.
     min_occurrences: int = 3
@@ -33,7 +40,7 @@ class ExperienceConfig:
     #: useful candidates with zero paid API calls.
     use_llm_summary: bool = False
 
-    def validated(self) -> "ExperienceConfig":
+    def validated(self) -> ExperienceConfig:
         if self.min_occurrences < 1:
             raise ValueError("min_occurrences must be >= 1")
         if self.min_projects < 1:

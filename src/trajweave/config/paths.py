@@ -41,7 +41,7 @@ class TrajWeavePaths:
     def cache_dir(self) -> Path:
         return self.home / "cache"
 
-    def ensure(self) -> "TrajWeavePaths":
+    def ensure(self) -> TrajWeavePaths:
         """Create the home directory tree if it does not yet exist."""
 
         self.home.mkdir(parents=True, exist_ok=True)

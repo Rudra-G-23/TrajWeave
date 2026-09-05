@@ -70,6 +70,11 @@ class Summary:
 
 @runtime_checkable
 class Summarizer(Protocol):
+    """Structural type for anything that turns aggregate cluster facts into a
+    title, summary, and reusable lesson. See :class:`DeterministicSummarizer`
+    (the default) and :class:`LlmSummarizer`.
+    """
+
     def summarize(self, data: SummaryInput) -> Summary:  # pragma: no cover - protocol
         ...
 
@@ -118,8 +123,8 @@ class DeterministicSummarizer:
                 f"in {n} trajectories across {d.project_count} project(s)."
             )
             lesson = (
-                f"This failure recurs and is not trivially fixed - when it appears, expect "
-                f"it to need real investigation rather than a quick retry."
+                "This failure recurs and is not trivially fixed - when it appears, expect "
+                "it to need real investigation rather than a quick retry."
             )
         else:  # pragma: no cover - defensive
             title = f"Recurring pattern in {ctx_phrase}"

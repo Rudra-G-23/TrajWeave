@@ -1,3 +1,10 @@
+"""Content hashing and deterministic short ids.
+
+Content hashes drive import dedup and the policy-preview staleness check;
+:func:`stable_short_id` derives ids (project ids, ``TW-`` ids) that stay the
+same across runs so imports are idempotent.
+"""
+
 from __future__ import annotations
 
 import hashlib

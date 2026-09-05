@@ -1,10 +1,18 @@
+"""The adapter contract and a tolerant JSONL streamer.
+
+:class:`BaseAdapter` defines what every agent adapter must provide (discover
+sessions, parse one into a :class:`NormalizedTrajectory`). :func:`iter_jsonl`
+streams a transcript line by line and never raises on a malformed line - the
+caller decides whether to skip it or abort the session.
+"""
+
 from __future__ import annotations
 
 import json
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from trajweave.models.enums import Agent
 from trajweave.models.trajectory import DiscoveredSession, NormalizedTrajectory
@@ -21,7 +29,7 @@ def iter_jsonl(path: str | Path) -> Iterator[tuple[int, dict | None, str | None]
     Never raises for content problems (only for the file being unreadable).
     """
 
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for lineno, raw in enumerate(fh, start=1):
             raw = raw.strip()
             if not raw:
