@@ -3,8 +3,9 @@
 Design constraints (see the Stage 4 brief):
 
 * zero third-party dependencies - ``http.server`` + ``sqlite3`` + ``json`` only;
-* **read-only** - every request opens its own short-lived SQLite connection in
-  ``mode=ro`` with ``PRAGMA query_only``; the UI process never writes;
+* GET requests are **read-only** - they open their own short-lived SQLite
+  connection in ``mode=ro`` with ``PRAGMA query_only``; explicit review actions
+  use separate POST requests and never write without an Apply operation;
 * binds ``127.0.0.1`` only - a local inspector, never ``0.0.0.0``;
 * one bad trajectory (malformed metadata, unknown event type, missing source
   file) must not break the app.
@@ -25,6 +26,10 @@ from typing import Any, Iterator
 from urllib.parse import parse_qs, urlparse
 
 from trajweave import __version__
+from trajweave.config.paths import TrajWeavePaths
+from trajweave.review.service import ReviewError, ReviewService
+from trajweave.review.targets import SafetyError
+from trajweave.storage.database import Database
 from trajweave.storage.repository import Repository
 from trajweave.utils.logging import get_logger
 from trajweave.utils.timeparse import parse_timestamp
@@ -109,7 +114,7 @@ def _schema_version(repo: Repository) -> int | None:
             "SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations"
         )
         return int(row["v"]) if row else 0
-    except sqlite3.OperationalError:
+    except (AttributeError, sqlite3.OperationalError):
         return None
 
 
@@ -241,7 +246,7 @@ def build_experiences(repo: Repository, params: dict[str, list[str]]) -> dict[st
 
     try:
         rows = repo.list_experiences(status=first("status"), order=first("order") or "confidence")
-    except sqlite3.OperationalError:
+    except (AttributeError, sqlite3.OperationalError):
         # schema v1 DB (pre Stage 5) - present as "no experiences yet".
         return {"experiences": [], "counts": {}, "run": None, "schema_ok": False}
     counts = repo.experience_counts()
@@ -273,7 +278,15 @@ def build_experience(repo: Repository, experience_id: str) -> dict[str, Any] | N
         feats, fok = _loads(ed.pop("features_json", None))
         ed["features"] = feats if fok else None
         evidence.append(ed)
-    return {"experience": exp, "evidence": evidence}
+    # Placement is derived data introduced after Stage 5.  An absent proposal
+    # is a normal read-only state - for example, before `placements generate`
+    # or when there are no eligible experiences - so it must not hide the
+    # underlying experience detail.
+    return {
+        "experience": exp,
+        "evidence": evidence,
+        "placement": build_placement(repo, experience_id),
+    }
 
 
 def _experience_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -286,6 +299,107 @@ def _experience_row(row: sqlite3.Row) -> dict[str, Any]:
     d["confidence"] = float(d.get("confidence") or 0.0)
     d.pop("confidence_json", None)
     d.pop("context_json", None)
+    return d
+
+
+def build_placements(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
+    """Build a compact, read-only placement list.
+
+    Placement alternatives remain available through an Experience detail, but
+    this endpoint makes the current recommendation set discoverable without
+    asking the browser to reimplement ranking or scoring.
+    """
+
+    def first(name: str) -> str | None:
+        vals = params.get(name)
+        return vals[0].strip() if vals and vals[0].strip() else None
+
+    placement_type = first("type") or first("recommended")
+    try:
+        rows = repo.list_placement_proposal_sets(
+            placement_type=placement_type,
+            recommended=placement_type,
+        )
+    except (AttributeError, sqlite3.OperationalError):
+        # Databases from Stage 5 and earlier remain inspectable in the UI.
+        return {"placements": [], "schema_ok": False}
+    return {"placements": [_placement_list_row(row) for row in rows], "schema_ok": True}
+
+
+def build_placement(repo: Repository, experience_id: str) -> dict[str, Any] | None:
+    """Build the full proposal/evidence trace for one Experience."""
+
+    try:
+        proposal_set = repo.get_placement_proposal_set(experience_id)
+    except (AttributeError, sqlite3.OperationalError):
+        return None
+    if proposal_set is None:
+        return None
+    proposals = [_placement_row(row) for row in repo.get_placement_proposals(experience_id)]
+    evidence_by_occurrence: dict[str, dict[str, Any]] = {}
+    for proposal in proposals:
+        for item in repo.get_placement_proposal_evidence(proposal["id"]):
+            row = dict(item)
+            # ``classification`` is the Stage 5 support/contradiction relation;
+            # the proposal-specific role is separately preserved below.
+            row["relationship"] = row.get("classification") or row.get("role")
+            row["placement_role"] = row.get("role")
+            # A placement reader needs the project label, not its private
+            # absolute filesystem root.
+            row.pop("project_root", None)
+            occurrence_id = str(row.get("occurrence_id") or "")
+            if occurrence_id and occurrence_id not in evidence_by_occurrence:
+                evidence_by_occurrence[occurrence_id] = row
+    evidence = []
+    for item in evidence_by_occurrence.values():
+        row = dict(item)
+        features, valid = _loads(row.pop("features_json", None))
+        row["features"] = features if valid else None
+        evidence.append(row)
+    return {"proposal_set": dict(proposal_set), "proposals": proposals, "evidence": evidence}
+
+
+def build_reviews(repo: Repository, params: dict[str, list[str]]) -> dict[str, Any]:
+    def first(name: str) -> str | None:
+        values = params.get(name)
+        return values[0].strip() if values and values[0].strip() else None
+
+    try:
+        rows = ReviewService(repo, TrajWeavePaths(Path(repo.db.path).parent if hasattr(repo.db, "path") else Path("."))).list(
+            status=first("status")
+        )
+    except (AttributeError, sqlite3.OperationalError):
+        return {"reviews": [], "schema_ok": False}
+    return {"reviews": rows, "schema_ok": True}
+
+
+def build_review(repo: Repository, value: str, db_path: Path) -> dict[str, Any] | None:
+    try:
+        payload = ReviewService(repo, TrajWeavePaths(db_path.parent)).history(value)
+    except (ReviewError, AttributeError, sqlite3.OperationalError):
+        return None
+    return payload if payload.get("proposal") else None
+
+
+def _placement_list_row(row: Any) -> dict[str, Any]:
+    d = dict(row)
+    if "score" in d:
+        d["score"] = float(d.get("score") or 0.0)
+    if "rank" in d:
+        d["rank"] = int(d.get("rank") or 0)
+    if "recommended_score" in d:
+        d["recommended_score"] = float(d.get("recommended_score") or 0.0)
+    return d
+
+
+def _placement_row(row: Any) -> dict[str, Any]:
+    d = _placement_list_row(row)
+    diagnostics, diagnostics_ok = _loads(d.pop("diagnostics_json", d.get("diagnostics")))
+    features, features_ok = _loads(
+        d.pop("feature_values_json", d.pop("features_json", d.get("features")))
+    )
+    d["diagnostics"] = diagnostics if diagnostics_ok and isinstance(diagnostics, list) else []
+    d["features"] = features if features_ok and isinstance(features, dict) else {}
     return d
 
 
@@ -361,6 +475,15 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 except OSError:
                     pass
 
+        def do_POST(self) -> None:  # noqa: N802
+            try:
+                self._post_route()
+            except BrokenPipeError:  # pragma: no cover
+                pass
+            except Exception as exc:  # noqa: BLE001
+                log.exception("unhandled POST error")
+                self._error(500, f"internal error: {type(exc).__name__}")
+
         do_HEAD = do_GET
 
         def _route(self) -> None:
@@ -381,6 +504,56 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 return self._api(path, params)
 
             self._error(404, "not found")
+
+        def _post_route(self) -> None:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if not path.startswith("/api/reviews/"):
+                return self._error(404, "not found")
+            suffix = path[len("/api/reviews/"):]
+            parts = suffix.split("/")
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                return self._error(404, "not found")
+            value, action = parts
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 1_000_000:
+                    return self._error(413, "request body too large")
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode("utf-8"))
+                if not isinstance(body, dict):
+                    raise ValueError("request body must be a JSON object")
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                return self._error(400, str(exc))
+
+            paths = TrajWeavePaths(db_path.parent).ensure()
+            try:
+                with Database(db_path) as db:
+                    service = ReviewService(Repository(db), paths)
+                    if action == "accept":
+                        rid = service.accept(value, agent=body.get("agent"), target=body.get("target"))
+                        result = {"review_id": rid, "status": "accepted"}
+                    elif action == "reject":
+                        result = {"review_id": service.reject(value), "status": "rejected"}
+                    elif action == "defer":
+                        result = {"review_id": service.defer(value), "status": "deferred"}
+                    elif action in {"test-first", "test_first"}:
+                        result = {"review_id": service.test_first(value), "status": "test_first"}
+                    elif action == "edit":
+                        result = {"review_id": service.edit(value, str(body.get("content") or "")), "status": "unreviewed"}
+                    elif action == "choose":
+                        result = {"review_id": service.choose(value, str(body.get("placement") or "")), "status": "unreviewed"}
+                    elif action == "preview":
+                        result = service.preview(value, target=body.get("target"), agent=body.get("agent"))
+                    elif action == "apply":
+                        result = service.apply(value, dry_run=bool(body.get("dry_run", False)))
+                    else:
+                        return self._error(404, "unknown review action")
+            except ReviewError as exc:
+                return self._error(409, str(exc))
+            except (ValueError, SafetyError) as exc:
+                return self._error(422, str(exc))
+            return self._json(result)
 
         def _static(self, name: str) -> None:
             try:
@@ -427,6 +600,22 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                     if payload
                     else self._error(404, "no such experience")
                 )
+            if path == "/api/placements":
+                return self._json(build_placements(repo, params))
+            if path.startswith("/api/placements/"):
+                eid = path[len("/api/placements/") :]
+                payload = build_placement(repo, eid)
+                return (
+                    self._json(payload)
+                    if payload
+                    else self._error(404, "no placement proposal set for this experience")
+                )
+            if path == "/api/reviews":
+                return self._json(build_reviews(repo, params))
+            if path.startswith("/api/reviews/"):
+                value = path[len("/api/reviews/"):]
+                payload = build_review(repo, value, db_path)
+                return self._json(payload) if payload else self._error(404, "no such review or proposal")
             if path == "/api/debug/sessions":
                 return self._json(build_debug_sessions(repo, params))
             if path.startswith("/api/trajectories/"):
@@ -448,6 +637,10 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
                 )
             if path == "/api/experiences":
                 return self._json({"experiences": [], "counts": {}, "run": None})
+            if path == "/api/placements":
+                return self._json({"placements": [], "schema_ok": False})
+            if path == "/api/reviews":
+                return self._json({"reviews": [], "schema_ok": False})
             if path == "/api/debug/sessions":
                 return self._json({"sessions": []})
             self._error(404, "no database yet")
