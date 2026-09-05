@@ -278,3 +278,52 @@ Formal write-up: [`STAGE_5_REPORT.md`](./STAGE_5_REPORT.md).
 No `AGENTS.md` / `CLAUDE.md` touched, no skill, no rule written into any repo,
 no project source changed, no transcript copied/modified, no network, no paid
 API, no cloud. New runtime dependencies: none. `trajweave` `0.3.0` -> `0.5.0`.
+
+---
+
+## Session 4 - Stage 6 deterministic placement engine (2026-09-03)
+
+Formal write-up: [`STAGE_6_REPORT.md`](./STAGE_6_REPORT.md).
+
+- Added schema v3 placement runs, current proposal sets, five canonical ranked
+  alternatives, feature snapshots, diagnostics, and proposal-to-occurrence
+  evidence links. Generation is idempotent and respects Stage 5 review
+  invalidation.
+- Added a pure deterministic placement package: evidence-only feature and scope
+  extraction, privacy-safe path normalization, Global gating, procedure
+  detection for Skill, explicit scoring, diagnostics, and fixed ties. No LLM or
+  network use.
+- Added `trajweave placements generate | list | show`, placement read APIs, and
+  a read-only Experience-detail placement section. There is no apply command,
+  policy file edit, repository mutation, or skill creation.
+- Added controlled Global, Project, Scoped, Skill, Ignore, ambiguity,
+  contamination, tie, privacy, persistence, migration, CLI, UI, regeneration,
+  and zero-candidate coverage. Full suite: 228 passed.
+- Real database validation returned 0 eligible Experiences and 0 proposal sets,
+  expected under unchanged Stage 5 thresholds. The database received only the
+  Stage 6 migration and an empty generation run.
+# Stage 7 - Review and Apply
+
+Implemented on `feat/stage7` from `7d3aa02`.
+
+- Added schema v4 for reviews, immutable action history, previews, and apply outcomes.
+- Added explicit Accept, Reject, Defer, Edit, Test first, alternative selection, Preview, Dry-run, and Apply flows.
+- Added safe Project, Scoped, Global, Skill, and Ignore handling with deterministic managed markers.
+- Preserved existing policy content and protected against stale previews, malformed targets, binary files, traversal, and symlink escape.
+- Added atomic replacement and pending apply intents.
+- Added CLI and loopback UI review controls with Apply visually separate from Accept.
+- Added temporary repository and adversarial fixtures.
+- Stage 7 does not implement Stage 8 evaluation or future adapter/platform roadmap items.
+
+# Stage 8 - Evaluation
+
+Implemented on `feat/stage8` from `a364409`.
+
+- Added schema v6 for frozen evaluation specs, append-only baseline/candidate runs, per-check verifier results, and paired comparisons.
+- Added isolated baseline/candidate workspaces via `git clone --local` (never `git worktree`, never the developer's active repo).
+- Reused Stage 7's exact `resolve_target`/`build_preview`/`apply_preview` safe writer for candidate application - no second file-writing path.
+- Added deterministic, no-network verifier/agent-command execution with timeouts and output caps; a pure `compare_runs` decision table (`improved | unchanged | regressed | invalid | incomparable`) that never hides a regression behind its label.
+- Added `trajweave eval list | show | run | compare` and a read-only "Evaluations" UI section; no Stage 9 lifecycle controls.
+- Added controlled toy-repo fixtures with a scripted fake agent/verifier proving all 12 required scenarios plus adversarial cases (deleted repo mid-flight, stale review, frozen-spec rerun rejection, subprocess timeout/output caps). Full suite: 290 passed.
+- Real database validated: migrated from schema v5 to v6 with zero data loss; `trajweave eval list` returns a clean empty result.
+- Stage 8 does not implement Stage 9 lifecycle logic or Stage 10 benchmarking.

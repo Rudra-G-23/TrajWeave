@@ -41,6 +41,17 @@ async function api(path) {
   return body;
 }
 
+async function apiWrite(path, body = {}) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const value = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((value && value.error) || `${res.status} ${res.statusText}`);
+  return value;
+}
+
 function esc(s) {
   return String(s == null ? "" : s);
 }
@@ -163,6 +174,18 @@ async function render() {
     } else if (path.startsWith("/experience/")) {
       navSetActive("experiences");
       await viewExperience(view, decodeURIComponent(path.slice("/experience/".length)));
+    } else if (path === "/reviews") {
+      navSetActive("reviews");
+      await viewReviews(view);
+    } else if (path.startsWith("/review/")) {
+      navSetActive("reviews");
+      await viewReview(view, decodeURIComponent(path.slice("/review/".length)));
+    } else if (path === "/evals") {
+      navSetActive("evals");
+      await viewEvals(view);
+    } else if (path.startsWith("/eval/")) {
+      navSetActive("evals");
+      await viewEval(view, decodeURIComponent(path.slice("/eval/".length)));
     } else if (path === "/debug") {
       navSetActive(null);
       await viewDebug(view, params);
@@ -814,6 +837,8 @@ async function viewExperience(view, id) {
   frag.push(el("h2", { text: "Candidate reusable lesson" }));
   frag.push(el("p", {}, e.reusable_lesson || "-"));
 
+  frag.push(renderPlacement(data.placement));
+
   frag.push(el("h2", { text: "Confidence" }));
   const ct = el("tbody");
   const addRow = (k, v) => ct.append(el("tr", {}, el("td", { text: k }), el("td", { class: "mono", text: v })));
@@ -861,10 +886,381 @@ async function viewExperience(view, id) {
 
   view.replaceChildren(...frag);
 }
+
+function placementLabel(kind) {
+  return {
+    ignore: "Ignore / Defer",
+    global_rule: "Global Rule",
+    project_rule: "Project Rule",
+    scoped_rule: "Scoped Rule",
+    skill: "Skill",
+  }[kind] || kind || "-";
+}
+
+function placementScope(proposal) {
+  const type = proposal.scope_type || "global";
+  return proposal.scope_value ? `${type}: ${proposal.scope_value}` : type;
+}
+
+function diagnosticText(diagnostic) {
+  if (typeof diagnostic === "string") return diagnostic;
+  if (!diagnostic || typeof diagnostic !== "object") return "";
+  const polarity = diagnostic.sign || diagnostic.polarity || "";
+  const sign = polarity ? `${polarity} ` : "";
+  return sign + (diagnostic.message || diagnostic.reason || diagnostic.feature || "");
+}
+
+function renderPlacement(placement) {
+  const parts = [el("h2", { text: "Placement proposal" })];
+  if (!placement || !(placement.proposals || []).length) {
+    parts.push(
+      el(
+        "div",
+        { class: "empty placement-empty" },
+        el("p", { text: "No placement proposal has been generated for this experience." }),
+        el("p", {}, "Generate proposals with ", el("code", { text: "trajweave placements generate" }), ".")
+      )
+    );
+    return el("section", { class: "placement" }, ...parts);
+  }
+
+  const proposals = placement.proposals.slice().sort((a, b) => Number(a.rank) - Number(b.rank));
+  const recommended = proposals[0];
+  parts.push(
+    el(
+      "div",
+      { class: "placement-recommended" },
+      el("div", { class: "muted", text: "Recommended" }),
+      el("div", { class: "placement-recommendation" },
+        el("strong", { text: placementLabel(recommended.placement_type) }),
+        " ",
+        confPill(recommended.score),
+        el("span", { class: "muted", text: `  Scope: ${placementScope(recommended)}` })
+      ),
+      recommended.proposed_content
+        ? el("p", { class: "placement-content", text: recommended.proposed_content })
+        : null
+    )
+  );
+
+  parts.push(el("h3", { text: "Alternatives" }));
+  const tbody = el("tbody");
+  for (const proposal of proposals) {
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { text: String(proposal.rank || "-") }),
+        el("td", { text: placementLabel(proposal.placement_type) }),
+        el("td", {}, confPill(proposal.score)),
+        el("td", { class: "mono", text: placementScope(proposal) }),
+        el("td", { class: "task", text: proposal.proposed_content || "-" })
+      )
+    );
+  }
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el("thead", {}, el("tr", {}, ...["Rank", "Placement", "Score", "Scope", "Canonical knowledge"].map((h) => el("th", { text: h })))),
+      tbody
+    )
+  );
+
+  const diagnostics = recommended.diagnostics || [];
+  parts.push(el("h3", { text: "Why this is recommended" }));
+  if (diagnostics.length) {
+    const list = el("ul", { class: "placement-diagnostics" });
+    diagnostics.forEach((d) => {
+      const text = diagnosticText(d);
+      if (text) list.append(el("li", { text }));
+    });
+    parts.push(list);
+  } else {
+    parts.push(el("p", { class: "muted", text: "No diagnostics were recorded." }));
+  }
+
+  const evidence = placement.evidence || [];
+  if (evidence.length) {
+    parts.push(el("h3", { text: `Placement evidence (${evidence.length})` }));
+    parts.push(el("p", { class: "muted", text: "The proposal remains linked to the Stage 5 evidence used to score it." }));
+    const evTable = el("tbody");
+    evidence.forEach((ev) => {
+      const range = ev.start_sequence && ev.end_sequence ? `?range=${ev.start_sequence}-${ev.end_sequence}` : "";
+      evTable.append(
+        el(
+          "tr",
+          {},
+          el("td", { class: "id-cell" }, el("a", { href: `#/session/${ev.trajectory_id}${range}` }, ev.trajectory_id || "-")),
+          el("td", {}, el("span", { class: "pill st-" + relClass(ev.relationship), text: ev.relationship || "-" })),
+          el("td", { text: ev.start_sequence === ev.end_sequence ? `seq ${ev.start_sequence}` : `seq ${ev.start_sequence || "-"}-${ev.end_sequence || "-"}` }),
+          el("td", { class: "muted", text: ev.project_name || "-" })
+        )
+      );
+    });
+    parts.push(el("table", { class: "tbl" }, el("thead", {}, el("tr", {}, ...["Session", "Relationship", "Events", "Project"].map((h) => el("th", { text: h })))), evTable));
+  }
+  return el("section", { class: "placement" }, ...parts);
+}
 function relClass(rel) {
   if (rel === "support") return "success";
   if (rel === "contradiction") return "failure";
   return "partial";
+}
+
+/* ---------- Stage 7 review queue -------------------------- */
+function reviewStatus(status) {
+  return el("span", { class: "tag review-status-" + (status || "unreviewed"), text: (status || "unreviewed").replace("_", " ") });
+}
+
+async function viewReviews(view) {
+  const data = await api("/api/reviews");
+  const rows = data.reviews || [];
+  const parts = [
+    el("div", { class: "page-head" }, el("h1", { text: "Review" })),
+    el("p", { class: "muted", text: "Review Stage 6 proposals, inspect exact targets and diffs, then Apply explicitly. Accept never writes a repository file." }),
+  ];
+  if (!rows.length) {
+    parts.push(el("div", { class: "empty" }, el("p", { text: "No reviewable proposals." }),
+      el("p", {}, "Run ", el("code", { text: "trajweave placements generate" }), " after Stage 5 extraction.")));
+    view.replaceChildren(...parts);
+    return;
+  }
+  const tbody = el("tbody");
+  rows.forEach((row) => tbody.append(el("tr", {},
+    el("td", { class: "id-cell" }, el("a", { href: `#/review/${encodeURIComponent(row.review_id)}`, text: row.review_id })),
+    el("td", {}, reviewStatus(row.review_status)),
+    el("td", { text: row.experience_id }),
+    el("td", { text: placementLabel(row.recommended_type) }),
+    el("td", {}, confPill(row.recommended_score)),
+    el("td", { class: "task", text: row.experience_title || "(untitled)" })
+  )));
+  parts.push(el("table", { class: "tbl" },
+    el("thead", {}, el("tr", {}, ...["Review", "Status", "Experience", "Recommendation", "Score", "Title"].map((h) => el("th", { text: h })))), tbody));
+  view.replaceChildren(...parts);
+}
+
+function reviewActionButton(label, action, value, reload, cls = "") {
+  return el("button", { class: cls, type: "button", text: label, onclick: async () => {
+    try { await apiWrite(`/api/reviews/${encodeURIComponent(value)}/${action}`); await reload(); }
+    catch (err) { alert(err.message); }
+  }});
+}
+
+async function viewReview(view, id) {
+  const data = await api("/api/reviews/" + encodeURIComponent(id));
+  const review = data.review || {};
+  const proposal = data.proposal || {};
+  const exp = data.experience || {};
+  const currentStatus = review.computed_status || review.status || "unreviewed";
+  const parts = [
+    el("p", { class: "crumbs" }, el("a", { href: "#/reviews" }, "Reviews"), " / ", id),
+    el("div", { class: "detail-head review-head" },
+      el("div", {}, el("span", { class: "id-cell mono", text: review.id || "virtual review" }), "  ", reviewStatus(currentStatus)),
+      el("div", { class: "dh-title", text: exp.title || exp.id || "Review" }),
+      el("p", { class: "muted", text: "Accept approves the idea. Apply is a separate filesystem operation." })
+    ),
+    el("h2", { text: "Experience" }), el("p", {}, exp.summary || exp.reusable_lesson || "-"),
+    el("h2", { text: "Recommendation" }),
+    el("p", {}, el("strong", { text: placementLabel(proposal.placement_type) }), " ", confPill(proposal.score),
+      " ", el("span", { class: "muted", text: `Scope: ${placementScope(proposal)}` })),
+    el("p", { class: "muted", text: (proposal.diagnostics || []).map(diagnosticText).join(" | ") || "No diagnostics" }),
+  ];
+  parts.push(el("h2", { text: "Alternatives" }));
+  const altBody = el("tbody");
+  (data.alternatives || []).forEach((alt) => altBody.append(el("tr", {},
+    el("td", { text: String(alt.rank) }), el("td", { text: placementLabel(alt.placement_type) }),
+    el("td", {}, confPill(alt.score)), el("td", { class: "mono", text: placementScope(alt) }),
+    el("td", { class: "task", text: alt.proposed_content || "-" }),
+    el("td", {}, alt.id === proposal.id ? el("span", { class: "tag", text: "selected" }) :
+      el("button", { type: "button", text: "Choose", onclick: async () => {
+        try { await apiWrite(`/api/reviews/${encodeURIComponent(id)}/choose`, { placement: alt.placement_type }); await viewReview(view, id); }
+        catch (err) { alert(err.message); }
+      }}))
+  )));
+  parts.push(el("table", { class: "tbl" }, el("thead", {}, el("tr", {}, ...["Rank", "Placement", "Score", "Scope", "Canonical knowledge", "Action"].map((h) => el("th", { text: h })))), altBody));
+
+  const editor = el("textarea", { class: "review-editor", rows: "6" });
+  editor.value = proposal.effective_content || proposal.proposed_content || "";
+  const agent = el("select", { "aria-label": "Target agent" },
+    el("option", { value: "", text: "Choose agent" }), el("option", { value: "codex", text: "Codex - AGENTS.md" }),
+    el("option", { value: "claude", text: "Claude - CLAUDE.md" }));
+  if (review.target_agent) agent.value = review.target_agent;
+  const target = el("input", { class: "review-target", type: "text", placeholder: "Optional exact target path" });
+  target.value = review.target_path || "";
+  const statusLine = el("p", { class: "muted", text: "Preview is required before Apply." });
+  const diffBox = el("pre", { class: "review-diff", text: "" });
+  const reload = () => viewReview(view, id);
+  const editButton = el("button", { type: "button", text: "Save edited content", onclick: async () => {
+    try { await apiWrite(`/api/reviews/${encodeURIComponent(id)}/edit`, { content: editor.value }); await reload(); }
+    catch (err) { alert(err.message); }
+  }});
+  const previewButton = el("button", { type: "button", text: "Preview", onclick: async () => {
+    try {
+      const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/preview`, { agent: agent.value || undefined, target: target.value || undefined });
+      diffBox.textContent = result.unified_diff || "(no changes)";
+      statusLine.textContent = `Preview ${result.preview_id} - target hash ${result.target_hash || "(missing)"}`;
+      applyButton.disabled = false;
+    } catch (err) { applyButton.disabled = true; alert(err.message); }
+  }});
+  const dryRunButton = el("button", { type: "button", text: "Dry-run", onclick: async () => {
+    try { const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/apply`, { dry_run: true }); diffBox.textContent = result.unified_diff || "(no changes)"; statusLine.textContent = "Dry-run complete - writes: no"; }
+    catch (err) { alert(err.message); }
+  }});
+  const applyButton = el("button", { class: "apply-button", type: "button", text: "Apply", disabled: true, onclick: async () => {
+    if (!confirm("Apply this exact preview to the selected target?")) return;
+    try { const result = await apiWrite(`/api/reviews/${encodeURIComponent(id)}/apply`, {}); statusLine.textContent = `${result.outcome}: ${result.target_path}`; applyButton.disabled = true; }
+    catch (err) { alert(err.message); }
+  }});
+  parts.push(el("h2", { text: "Editable content" }), editor, el("div", { class: "review-targets" }, agent, target),
+    el("div", { class: "review-actions" },
+      reviewActionButton("Accept", "accept", id, reload, "accept-button"),
+      reviewActionButton("Reject", "reject", id, reload), reviewActionButton("Defer", "defer", id, reload),
+      reviewActionButton("Test first", "test-first", id, reload), editButton),
+    el("h2", { text: "Exact target and diff" }), el("div", { class: "review-actions" }, previewButton, dryRunButton, applyButton), statusLine, diffBox,
+    el("h2", { text: "Evidence and history" }), el("p", { class: "muted", text: `${(data.evidence || []).length} linked occurrence(s); ${(data.history && data.history.actions || []).length} recorded action(s).` }));
+  view.replaceChildren(...parts);
+}
+
+/* ---------- Stage 8 evaluations (read-only) ---------------- */
+function evalOutcomePill(outcome) {
+  const cls = { improved: "success", regressed: "failure", unchanged: "partial" }[outcome] || "unknown";
+  return el("span", { class: `pill st-${cls}`, text: (outcome || "unknown").toUpperCase() });
+}
+
+async function viewEvals(view) {
+  const data = await api("/api/evals");
+  const rows = data.evaluations || [];
+  const parts = [
+    el("div", { class: "page-head" }, el("h1", { text: "Evaluations" })),
+    el(
+      "p",
+      { class: "muted" },
+      "Baseline vs. reviewed-candidate comparisons for a frozen coding task. Read-only - run and manage evaluations with ",
+      el("code", { text: "trajweave eval run" }),
+      "."
+    ),
+  ];
+  if (!rows.length) {
+    parts.push(
+      el(
+        "div",
+        { class: "empty" },
+        el("p", { text: "No evaluations yet." }),
+        el("p", {}, "Run ", el("code", { text: "trajweave eval run <review-id>" }), " after reviewing a proposal.")
+      )
+    );
+    view.replaceChildren(...parts);
+    return;
+  }
+  const tbody = el("tbody");
+  rows.forEach((row) =>
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { class: "id-cell" }, el("a", { href: `#/eval/${encodeURIComponent(row.id)}`, text: row.id })),
+        el("td", { class: "mono", text: row.review_id }),
+        el("td", { text: placementLabel(row.placement_type) }),
+        el("td", { text: row.target_agent }),
+        el("td", { text: String(row.repetitions || 0) }),
+        el("td", { class: "mono", text: (row.repo_commit || "").slice(0, 10) }),
+        el("td", { text: fmtDate(row.created_at) })
+      )
+    )
+  );
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el(
+        "thead",
+        {},
+        el("tr", {}, ...["Evaluation", "Review", "Placement", "Agent", "Reps", "Commit", "Created"].map((h) => el("th", { text: h })))
+      ),
+      tbody
+    )
+  );
+  view.replaceChildren(...parts);
+}
+
+async function viewEval(view, id) {
+  const data = await api("/api/evals/" + encodeURIComponent(id));
+  const spec = data.spec || {};
+  const runsByRep = new Map();
+  (data.runs || []).forEach((run) => {
+    const list = runsByRep.get(run.repetition_index) || [];
+    list.push(run);
+    runsByRep.set(run.repetition_index, list);
+  });
+  const parts = [
+    el("p", { class: "crumbs" }, el("a", { href: "#/evals" }, "Evaluations"), " / ", id),
+    el(
+      "div",
+      { class: "detail-head" },
+      el("div", {}, el("span", { class: "id-cell mono", text: spec.id })),
+      el("div", { class: "dh-title", text: `review ${spec.review_id} - ${placementLabel(spec.placement_type)} - ${spec.target_agent}` }),
+      el("p", { class: "muted", text: `${spec.repo_root} @ ${(spec.repo_commit || "").slice(0, 12)}` })
+    ),
+    el("h2", { text: "Comparisons" }),
+  ];
+  const compBody = el("tbody");
+  (data.comparisons || []).forEach((c) => {
+    compBody.append(
+      el(
+        "tr",
+        {},
+        el("td", { text: String(c.repetition_index) }),
+        el("td", {}, evalOutcomePill(c.outcome)),
+        el("td", { class: "mono", text: c.task_success_delta || "-" }),
+        el("td", { text: String(c.regression_count || 0) }),
+        el("td", { class: "task", text: c.invalid_reason || "-" })
+      )
+    );
+  });
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el("thead", {}, el("tr", {}, ...["Rep", "Outcome", "Task delta", "Regressions", "Invalid reason"].map((h) => el("th", { text: h })))),
+      compBody
+    )
+  );
+
+  parts.push(el("h2", { text: "Runs" }));
+  for (const [rep, runs] of [...runsByRep.entries()].sort((a, b) => a[0] - b[0])) {
+    parts.push(el("h3", { text: `Repetition ${rep}` }));
+    for (const run of runs.sort((a, b) => a.order_position - b.order_position)) {
+      const checks = el("ul", { class: "eval-checks" });
+      (run.verifier_results || []).forEach((v) =>
+        checks.append(
+          el(
+            "li",
+            {},
+            el("span", { class: "pill st-" + (v.passed ? "success" : "failure"), text: v.passed ? "PASS" : "FAIL" }),
+            " ",
+            v.checker_name
+          )
+        )
+      );
+      parts.push(
+        el(
+          "div",
+          { class: "eval-run" },
+          el(
+            "p",
+            {},
+            el("strong", { text: run.condition }),
+            ` - ${run.status} - ${run.duration_ms == null ? "-" : run.duration_ms + "ms"}`,
+            run.apply_outcome ? ` - apply: ${run.apply_outcome}` : ""
+          ),
+          run.error_reason ? el("p", { class: "muted", text: run.error_reason }) : null,
+          checks
+        )
+      );
+    }
+  }
+  view.replaceChildren(...parts);
 }
 
 /* ---------- import ledger (debug) ----------------------- */

@@ -1,6 +1,6 @@
 """``trajweave`` command-line entry point.
 
-Stage 0-3 surface only:
+Current command surface:
 
     trajweave init [PATH]        - opt a repository in
     trajweave projects           - list registered repositories
@@ -8,12 +8,15 @@ Stage 0-3 surface only:
     trajweave sessions           - list discovered source sessions
     trajweave trajectories       - list stored trajectories
     trajweave show TW-000001     - inspect one trajectory
+    trajweave review list        - review Stage 6 proposals
+    trajweave apply <id>         - explicitly apply an accepted preview
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -34,7 +37,7 @@ log = get_logger("cli")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trajweave",
-        description="Local-first coding-agent trajectory data substrate (Stage 0-3).",
+        description="Local-first coding-agent trajectory learning substrate.",
     )
     parser.add_argument("--version", action="version", version=f"trajweave {__version__}")
     parser.add_argument(
@@ -127,7 +130,268 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_exp.set_defaults(func=lambda _a: (p_exp.print_help() or 0))
 
-    p_ui = sub.add_parser("ui", help="launch the local, read-only trajectory explorer")
+    p_placements = sub.add_parser(
+        "placements",
+        help="generate / inspect read-only Stage 6 placement proposals",
+    )
+    placements_sub = p_placements.add_subparsers(dest="placements_command", metavar="<subcommand>")
+
+    pl_generate = placements_sub.add_parser(
+        "generate", help="derive deterministic placement alternatives for eligible experiences"
+    )
+    pl_generate.add_argument("--json", action="store_true", help="machine-readable summary")
+    pl_generate.set_defaults(func=cmd_placements_generate)
+
+    pl_list = placements_sub.add_parser("list", help="list current placement recommendations")
+    pl_list.add_argument(
+        "--type",
+        dest="placement_type",
+        choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"],
+        help="only recommendation sets whose recommended placement has this type",
+    )
+    pl_list.add_argument(
+        "--recommended",
+        choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"],
+        help="alias for --type, retained for explicit recommendation filtering",
+    )
+    pl_list.add_argument("--json", action="store_true", help="machine-readable output")
+    pl_list.set_defaults(func=cmd_placements_list)
+
+    pl_show = placements_sub.add_parser("show", help="show alternatives and evidence for one experience")
+    pl_show.add_argument("experience_id")
+    pl_show.add_argument("--json", action="store_true", help="machine-readable output")
+    pl_show.set_defaults(func=cmd_placements_show)
+
+    p_placements.set_defaults(func=lambda _a: (p_placements.print_help() or 0))
+
+    p_review = sub.add_parser("review", help="review Stage 6 proposals without applying them")
+    review_sub = p_review.add_subparsers(dest="review_command", metavar="<subcommand>")
+    rv_list = review_sub.add_parser("list", help="list reviewable proposals and review state")
+    rv_list.add_argument("--status", choices=["unreviewed", "accepted", "rejected", "deferred", "test_first", "applied", "stale"])
+    rv_list.add_argument("--json", action="store_true")
+    rv_list.set_defaults(func=cmd_review_list)
+    rv_show = review_sub.add_parser("show", help="show review, alternatives, evidence, and history")
+    rv_show.add_argument("review_id")
+    rv_show.add_argument("--json", action="store_true")
+    rv_show.set_defaults(func=cmd_review_show)
+    rv_accept = review_sub.add_parser("accept", help="approve an exact proposal for later Apply")
+    rv_accept.add_argument("review_id")
+    rv_accept.add_argument("--agent", choices=["codex", "claude"])
+    rv_accept.add_argument("--target")
+    rv_accept.set_defaults(func=cmd_review_accept)
+    for name, handler, help_text in (
+        ("reject", cmd_review_reject, "reject a proposal"),
+        ("defer", cmd_review_defer, "defer a proposal and keep collecting evidence"),
+        ("test-first", cmd_review_test_first, "handoff a reviewed proposal to Stage 8"),
+    ):
+        command = review_sub.add_parser(name, help=help_text)
+        command.add_argument("review_id")
+        command.set_defaults(func=handler)
+    rv_edit = review_sub.add_parser("edit", help="store an edited proposal variant")
+    rv_edit.add_argument("review_id")
+    content = rv_edit.add_mutually_exclusive_group(required=True)
+    content.add_argument("--content")
+    content.add_argument("--file")
+    rv_edit.set_defaults(func=cmd_review_edit)
+    rv_choose = review_sub.add_parser("choose", help="choose another Stage 6 placement alternative")
+    rv_choose.add_argument("review_id")
+    rv_choose.add_argument("--placement", required=True,
+                           choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"])
+    rv_choose.set_defaults(func=cmd_review_choose)
+    p_review.set_defaults(func=lambda _a: (p_review.print_help() or 0))
+
+    p_apply = sub.add_parser("apply", help="preview or explicitly apply an accepted review")
+    p_apply.add_argument("review_id")
+    p_apply.add_argument("--dry-run", action="store_true", help="show the exact diff without writing")
+    p_apply.set_defaults(func=cmd_apply)
+
+    p_eval = sub.add_parser(
+        "eval", help="run and inspect Stage 8 baseline/candidate evaluations of a reviewed policy"
+    )
+    eval_sub = p_eval.add_subparsers(dest="eval_command", metavar="<subcommand>")
+
+    ev_list = eval_sub.add_parser("list", help="list frozen evaluations")
+    ev_list.add_argument("--json", action="store_true")
+    ev_list.set_defaults(func=cmd_eval_list)
+
+    ev_show = eval_sub.add_parser("show", help="show one evaluation, its runs, and comparisons")
+    ev_show.add_argument("evaluation_id")
+    ev_show.add_argument("--json", action="store_true")
+    ev_show.set_defaults(func=cmd_eval_show)
+
+    ev_run = eval_sub.add_parser(
+        "run",
+        help="create a frozen evaluation from a reviewed proposal, or add repetitions to one",
+    )
+    ev_run.add_argument(
+        "ref", help="a reviewed review/proposal id (creates a new evaluation) "
+                    "or an existing evaluation id (adds repetitions to it)"
+    )
+    ev_run.add_argument("--repo", metavar="PATH", help="repository to snapshot (required when creating)")
+    ev_run.add_argument("--commit", help="commit to snapshot (default: HEAD of --repo)")
+    ev_run.add_argument("--task", help="inline task description")
+    ev_run.add_argument("--task-file", metavar="PATH", help="read the task specification from a file")
+    ev_run.add_argument(
+        "--verify", action="append", metavar="CMD",
+        help="a verifier shell command (repeatable; the first is the primary task check)",
+    )
+    ev_run.add_argument(
+        "--agent-cmd", metavar="CMD",
+        help="shell command that performs the task inside the isolated workspace "
+             "(omit to skip the agent step and only verify the isolated snapshot); "
+             "never invoked automatically - this must be passed explicitly",
+    )
+    ev_run.add_argument("--target-agent", choices=["codex", "claude"], help="default: the review's target agent")
+    ev_run.add_argument("--target", help="explicit relative override for the candidate policy's target path")
+    ev_run.add_argument("--agent-name", help="harness/agent name, for provenance only")
+    ev_run.add_argument("--agent-version")
+    ev_run.add_argument("--model")
+    ev_run.add_argument("--model-version")
+    ev_run.add_argument("--reasoning", help="reasoning/effort configuration, for provenance only")
+    ev_run.add_argument("--timeout", type=int, default=120, help="per-command timeout in seconds")
+    ev_run.add_argument("--repetitions", type=int, default=1, help="paired trials to run now")
+    ev_run.add_argument(
+        "--order", choices=["baseline_first", "candidate_first", "alternating"], default="baseline_first",
+    )
+    ev_run.add_argument("--seed", help="recorded verbatim; TrajWeave does not control agent-side determinism")
+    ev_run.add_argument("--json", action="store_true")
+    ev_run.set_defaults(func=cmd_eval_run)
+
+    ev_compare = eval_sub.add_parser("compare", help="show paired baseline/candidate comparisons")
+    ev_compare.add_argument("evaluation_id")
+    ev_compare.add_argument("--json", action="store_true")
+    ev_compare.set_defaults(func=cmd_eval_compare)
+
+    p_eval.set_defaults(func=lambda _a: (p_eval.print_help() or 0))
+
+    p_life = sub.add_parser(
+        "lifecycle", help="Stage 9: manage a reviewed policy's lifecycle using Stage 8 evidence"
+    )
+    life_sub = p_life.add_subparsers(dest="lifecycle_command", metavar="<subcommand>")
+
+    lf_list = life_sub.add_parser("list", help="list logical policies")
+    lf_list.add_argument("--status", choices=["active", "disabled", "pruned"])
+    lf_list.add_argument("--json", action="store_true")
+    lf_list.set_defaults(func=cmd_lifecycle_list)
+
+    lf_show = life_sub.add_parser("show", help="show one policy: versions, lineage, evidence, recommendations")
+    lf_show.add_argument("policy_id")
+    lf_show.add_argument("--json", action="store_true")
+    lf_show.set_defaults(func=cmd_lifecycle_show)
+
+    lf_history = life_sub.add_parser("history", help="alias for 'show' - full append-only history")
+    lf_history.add_argument("policy_id")
+    lf_history.add_argument("--json", action="store_true")
+    lf_history.set_defaults(func=cmd_lifecycle_show)
+
+    lf_adopt = life_sub.add_parser("adopt", help="bootstrap a logical policy (V1) from an accepted Stage 7 review")
+    lf_adopt.add_argument("review_id")
+    lf_adopt.add_argument("--json", action="store_true")
+    lf_adopt.set_defaults(func=cmd_lifecycle_adopt)
+
+    lf_recommend = life_sub.add_parser("recommend", help="compute a deterministic, evidence-backed recommendation")
+    lf_recommend.add_argument("policy_id")
+    lf_recommend.add_argument("--json", action="store_true")
+    lf_recommend.set_defaults(func=cmd_lifecycle_recommend)
+
+    lf_dupes = life_sub.add_parser("duplicates", help="scan active policies for byte-identical merge candidates")
+    lf_dupes.add_argument("--json", action="store_true")
+    lf_dupes.set_defaults(func=cmd_lifecycle_duplicates)
+
+    lf_rewrite = life_sub.add_parser("rewrite", help="create a new version with rewritten content")
+    lf_rewrite.add_argument("policy_id")
+    lf_rewrite.add_argument("--content", help="the new policy text")
+    lf_rewrite.add_argument("--file", help="read the new policy text from a file")
+    lf_rewrite.add_argument("--reason")
+    lf_rewrite.add_argument("--json", action="store_true")
+    lf_rewrite.set_defaults(func=cmd_lifecycle_rewrite)
+
+    for name, help_text in (("promote", "widen scope"), ("demote", "narrow scope")):
+        cmd = life_sub.add_parser(name, help=f"create a new version to {help_text} (evidence-backed, reversible)")
+        cmd.add_argument("policy_id")
+        cmd.add_argument("--target-placement", choices=["global_rule", "project_rule", "scoped_rule", "skill"])
+        cmd.add_argument("--scope-type")
+        cmd.add_argument("--scope-value")
+        cmd.add_argument("--target-agent", choices=["codex", "claude"])
+        cmd.add_argument("--target", help="explicit relative target path override")
+        cmd.add_argument("--reason")
+        if name == "promote":
+            cmd.add_argument(
+                "--confirm-global", action="store_true",
+                help="required explicit approval to promote a policy to global scope",
+            )
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func=cmd_lifecycle_promote if name == "promote" else cmd_lifecycle_demote)
+
+    lf_merge = life_sub.add_parser("merge", help="combine two overlapping policies into a new one")
+    lf_merge.add_argument("policy_a")
+    lf_merge.add_argument("policy_b")
+    lf_merge.add_argument("--content", help="explicit merged text (default: concatenate both)")
+    lf_merge.add_argument("--allow-cross-scope", action="store_true")
+    lf_merge.add_argument("--reason")
+    lf_merge.add_argument("--json", action="store_true")
+    lf_merge.set_defaults(func=cmd_lifecycle_merge)
+
+    lf_split = life_sub.add_parser("split", help="split an overly broad policy into narrower children")
+    lf_split.add_argument("policy_id")
+    lf_split.add_argument(
+        "--children-file", required=True,
+        help="path to a JSON file: a list of {content, placement_type, scope_type, scope_value} objects",
+    )
+    lf_split.add_argument("--reason")
+    lf_split.add_argument("--json", action="store_true")
+    lf_split.set_defaults(func=cmd_lifecycle_split)
+
+    for name in ("disable", "enable", "prune"):
+        cmd = life_sub.add_parser(name, help=f"{name} a policy (reversible except prune)")
+        cmd.add_argument("policy_id")
+        cmd.add_argument("--reason")
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func={"disable": cmd_lifecycle_disable, "enable": cmd_lifecycle_enable, "prune": cmd_lifecycle_prune}[name])
+
+    lf_rollback = life_sub.add_parser("rollback", help="create a new version restoring an exact prior version")
+    lf_rollback.add_argument("policy_id")
+    lf_rollback.add_argument("version_number", type=int)
+    lf_rollback.add_argument("--reason")
+    lf_rollback.add_argument("--json", action="store_true")
+    lf_rollback.set_defaults(func=cmd_lifecycle_rollback)
+
+    lf_preview = life_sub.add_parser("preview", help="render the current version's exact file diff without writing")
+    lf_preview.add_argument("policy_id")
+    lf_preview.add_argument("--project", metavar="PATH", help="registered project root (for project/scoped/skill placements)")
+    lf_preview.add_argument("--target-agent", choices=["codex", "claude"])
+    lf_preview.add_argument("--target")
+    lf_preview.add_argument("--json", action="store_true")
+    lf_preview.set_defaults(func=cmd_lifecycle_preview)
+
+    lf_apply = life_sub.add_parser("apply", help="explicitly write the current version to disk (Stage 7 safety reused)")
+    lf_apply.add_argument("policy_id")
+    lf_apply.add_argument("--project", metavar="PATH")
+    lf_apply.add_argument("--target-agent", choices=["codex", "claude"])
+    lf_apply.add_argument("--target")
+    lf_apply.add_argument("--dry-run", action="store_true")
+    lf_apply.add_argument("--confirm-global", action="store_true", help="required to apply a global_rule policy")
+    lf_apply.add_argument("--json", action="store_true")
+    lf_apply.set_defaults(func=cmd_lifecycle_apply)
+
+    for name in ("accept", "reject", "defer"):
+        cmd = life_sub.add_parser(f"{name}-recommendation", help=f"{name} an open lifecycle recommendation")
+        cmd.add_argument("recommendation_id")
+        if name == "accept":
+            cmd.add_argument("--confirm-global", action="store_true")
+            cmd.add_argument("--target-placement", choices=["global_rule", "project_rule", "scoped_rule", "skill"])
+        else:
+            cmd.add_argument("--reason")
+        cmd.add_argument("--json", action="store_true")
+        cmd.set_defaults(func={
+            "accept": cmd_lifecycle_accept_recommendation,
+            "reject": cmd_lifecycle_reject_recommendation,
+            "defer": cmd_lifecycle_defer_recommendation,
+        }[name])
+
+    p_life.set_defaults(func=lambda _a: (p_life.print_help() or 0))
+
+    p_ui = sub.add_parser("ui", help="launch the local trajectory and review explorer")
     p_ui.add_argument(
         "--port", type=int, default=None,
         help="port to bind on 127.0.0.1 (default: 8765, auto-advances if taken)",
@@ -456,6 +720,822 @@ def cmd_experiences_review(args: argparse.Namespace) -> int:
         log.error("no experience %s", args.experience_id)
         return 2
     print(f"{args.experience_id}: review_status = {args.status}")
+    return 0
+
+
+def cmd_placements_generate(args: argparse.Namespace) -> int:
+    """Generate canonical proposals only - never apply them to a repository."""
+
+    from trajweave.placement import PlacementGenerator
+
+    with _open_db(args) as db:
+        result = PlacementGenerator(Repository(db)).run()
+    payload = result.as_dict()
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    print(f"Eligible experiences: {payload['eligible_experiences']}")
+    print(f"Placement proposal sets: {payload['proposal_sets']}")
+    print(f"Regenerated: {payload.get('regenerated', 0)}")
+    print(f"Unchanged: {payload.get('unchanged', 0)}")
+    print(f"Runtime: {payload['runtime_seconds']:.2f}s")
+    return 0
+
+
+def cmd_placements_list(args: argparse.Namespace) -> int:
+    placement_type = args.recommended or args.placement_type
+    with _open_db(args) as db:
+        rows = [
+            dict(row)
+            for row in Repository(db).list_placement_proposal_sets(
+                placement_type=placement_type,
+                recommended=placement_type,
+            )
+        ]
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No placement proposal sets. Run 'trajweave placements generate'.")
+        return 0
+    print(f"{'EXPERIENCE':<12}  {'RECOMMENDED':<14}  {'SCORE':>5}  {'SCOPE':<30}  TITLE")
+    for row in rows:
+        placement_kind = row["recommended_type"]
+        score = row["recommended_score"]
+        scope = _placement_scope({
+            "scope_type": row.get("recommended_scope_type"),
+            "scope_value": row.get("recommended_scope_value"),
+        })
+        print(
+            f"{row['experience_id']:<12}  {placement_kind:<14}  "
+            f"{float(score):>5.2f}  {scope:<30}  {(row.get('experience_title') or '')[:55]}"
+        )
+    return 0
+
+
+def cmd_placements_show(args: argparse.Namespace) -> int:
+    with _open_db(args) as db:
+        payload = _read_placement_set(Repository(db), args.experience_id)
+    if payload is None:
+        log.error("no placement proposal set for experience %s", args.experience_id)
+        return 2
+    payload = _placement_payload(payload)
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    proposal_set = payload.get("proposal_set") or {}
+    proposals = payload.get("proposals") or []
+    evidence = payload.get("evidence") or []
+    print(f"{args.experience_id} placement alternatives")
+    if proposal_set.get("generator_version"):
+        print(f"  generator: {proposal_set['generator_version']}")
+    if proposal_set.get("created_at"):
+        print(f"  generated: {proposal_set['created_at']}")
+    print()
+    for proposal in proposals:
+        scope = _placement_scope(proposal)
+        print(
+            f"  {proposal.get('rank', '-')}. {proposal['placement_type']:<14} "
+            f"{float(proposal['score']):.2f}  scope: {scope}"
+        )
+        if proposal.get("proposed_content"):
+            print(f"     {proposal['proposed_content']}")
+        for diagnostic in proposal.get("diagnostics") or []:
+            sign = (
+                diagnostic.get("sign", diagnostic.get("polarity", ""))
+                if isinstance(diagnostic, dict) else ""
+            )
+            message = diagnostic.get("message", "") if isinstance(diagnostic, dict) else str(diagnostic)
+            print(f"     {sign} {message}".rstrip())
+    if evidence:
+        print("\n  evidence:")
+        for item in evidence:
+            print(
+                f"    {item.get('trajectory_id', '-'):<12}  "
+                f"{item.get('relationship', '-'):<13}  "
+                f"seq {item.get('start_sequence', '-')}-{item.get('end_sequence', '-')}"
+            )
+    return 0
+
+
+def _review_service(args: argparse.Namespace):
+    from trajweave.review.service import ReviewService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, ReviewService(Repository(db), paths)
+
+
+def _review_payload(service, value: str) -> dict:
+    return service.history(value)
+
+
+def cmd_review_list(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        rows = service.list(status=args.status)
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No reviewable proposals. Run 'trajweave placements generate'.")
+        return 0
+    print(f"{'REVIEW':<22}  {'STATUS':<12}  {'RECOMMENDED':<14}  {'SCORE':>5}  TITLE")
+    for row in rows:
+        print(f"{row['review_id']:<22}  {row.get('review_status', 'unreviewed'):<12}  "
+              f"{row.get('recommended_type', '-'):<14}  {float(row.get('recommended_score') or 0):>5.2f}  "
+              f"{(row.get('experience_title') or '')[:60]}")
+    return 0
+
+
+def _print_review(payload: dict) -> None:
+    review = payload.get("review") or {}
+    proposal = payload.get("proposal") or {}
+    exp = payload.get("experience") or {}
+    print(f"{review.get('id') or 'unreviewed'}  {exp.get('id')}  {exp.get('title') or '(untitled)'}")
+    print(f"  status       : {review.get('computed_status') or review.get('status') or 'unreviewed'}")
+    print(f"  proposal     : {proposal.get('id')}  {proposal.get('placement_type')}  rank {proposal.get('rank')}")
+    print(f"  scope        : {_placement_scope(proposal)}")
+    print(f"  content      : {proposal.get('effective_content') or '-'}")
+    print(f"  alternatives : {len(payload.get('alternatives') or [])}")
+    print(f"  evidence     : {len(payload.get('evidence') or [])}")
+    if review:
+        print(f"  target       : {review.get('target_path') or '(not selected)'}")
+        print(f"  history      : {len((payload.get('history') or {}).get('actions') or [])} actions")
+
+
+def cmd_review_show(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        payload = _review_payload(service, args.review_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+    else:
+        _print_review(payload)
+        print("\n  alternatives:")
+        for item in payload.get("alternatives") or []:
+            print(f"    {item.get('rank')}. {item.get('placement_type')} {float(item.get('score') or 0):.2f} "
+                  f"{_placement_scope(item)}  {item.get('proposed_content') or '-'}")
+        for action in (payload.get("history") or {}).get("actions") or []:
+            print(f"    action {action['created_at']}: {action['action']} -> {action['to_status']}")
+    return 0
+
+
+def _run_review_action(args: argparse.Namespace, action: str) -> int:
+    db, service = _review_service(args)
+    try:
+        if action == "accept":
+            rid = service.accept(args.review_id, agent=args.agent, target=args.target)
+        elif action == "reject":
+            rid = service.reject(args.review_id)
+        elif action == "defer":
+            rid = service.defer(args.review_id)
+        elif action == "test_first":
+            rid = service.test_first(args.review_id)
+        elif action == "choose":
+            rid = service.choose(args.review_id, args.placement)
+        else:
+            if args.content is not None:
+                text = args.content
+            else:
+                text = Path(args.file).read_text("utf-8")
+            rid = service.edit(args.review_id, text)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    print(f"{rid}: {action} recorded; Apply remains explicit")
+    return 0
+
+
+def cmd_review_accept(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "accept")
+
+
+def cmd_review_reject(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "reject")
+
+
+def cmd_review_defer(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "defer")
+
+
+def cmd_review_test_first(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "test_first")
+
+
+def cmd_review_edit(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "edit")
+
+
+def cmd_review_choose(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "choose")
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        result = service.apply(args.review_id, dry_run=args.dry_run)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.dry_run:
+        print(f"Dry-run: {result['target_path']}")
+        print(f"Target hash: {result.get('target_hash') or '(missing)'}")
+        print(result.get("unified_diff") or "(no changes)")
+        print("Writes: no")
+    else:
+        print(f"{result['outcome']}: {result['target_path']}")
+    return 0
+
+
+def _eval_service(args: argparse.Namespace):
+    from trajweave.evaluation import EvaluationService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, EvaluationService(Repository(db), paths)
+
+
+def _parse_verifiers(args: argparse.Namespace) -> list:
+    from trajweave.evaluation.models import VerifierCheck
+
+    checks = []
+    for i, raw in enumerate(args.verify or []):
+        name = "task" if i == 0 else f"check_{i}"
+        checks.append(VerifierCheck(name, shlex.split(raw), args.timeout))
+    return checks
+
+
+def cmd_eval_list(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        rows = service.list()
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No evaluations yet. Run 'trajweave eval run <review-id>'.")
+        return 0
+    print(f"{'EVALUATION':<20}  {'REVIEW':<20}  {'REPS':>4}  {'TARGET':<8}  CREATED")
+    for r in rows:
+        print(
+            f"{r['id']:<20}  {r['review_id']:<20}  {int(r['repetitions']):>4}  "
+            f"{r['target_agent']:<8}  {r['created_at']}"
+        )
+    return 0
+
+
+def _print_eval(payload: dict) -> None:
+    spec = payload["spec"]
+    print(f"{spec['id']}  review={spec['review_id']}  agent={spec['target_agent']}  placement={spec['placement_type']}")
+    print(f"  repo    : {spec['repo_root']} @ {str(spec['repo_commit'])[:12]}")
+    print(f"  created : {spec['created_at']}")
+    print(f"\n  runs: {len(payload['runs'])}")
+    for run in payload["runs"]:
+        print(
+            f"    {run['id']:<38} {run['condition']:<10} {run['status']:<10} "
+            f"dur={run.get('duration_ms')}ms"
+        )
+        if run.get("error_reason"):
+            print(f"       error: {run['error_reason']}")
+        for v in run.get("verifier_results") or []:
+            mark = "PASS" if v["passed"] else "FAIL"
+            print(f"       [{mark}] {v['checker_name']}")
+    print(f"\n  comparisons: {len(payload['comparisons'])}")
+    for c in payload["comparisons"]:
+        print(
+            f"    rep {c['repetition_index']}: {c['outcome']:<12} "
+            f"delta={c.get('task_success_delta')}  regressions={c['regression_count']}"
+        )
+        if c.get("invalid_reason"):
+            print(f"      reason: {c['invalid_reason']}")
+
+
+def cmd_eval_show(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        payload = service.history(args.evaluation_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+    else:
+        _print_eval(payload)
+    return 0
+
+
+def cmd_eval_compare(args: argparse.Namespace) -> int:
+    db, service = _eval_service(args)
+    try:
+        payload = service.history(args.evaluation_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    comparisons = payload["comparisons"]
+    if args.json:
+        _print_json(comparisons)
+        return 0
+    if not comparisons:
+        print("No comparisons recorded yet.")
+        return 0
+    for c in comparisons:
+        print(
+            f"rep {c['repetition_index']}: {c['outcome']}  "
+            f"delta={c.get('task_success_delta')}  regressions={c['regression_count']}"
+        )
+        if c.get("invalid_reason"):
+            print(f"  reason: {c['invalid_reason']}")
+    return 0
+
+
+def cmd_eval_run(args: argparse.Namespace) -> int:
+    from trajweave.evaluation import EvaluationError
+
+    db, service = _eval_service(args)
+    try:
+        existing = service.repo.get_evaluation_spec(args.ref)
+        spec_defining = any((
+            args.repo, args.commit, args.task, args.task_file, args.verify, args.agent_cmd,
+            args.target_agent, args.target, args.agent_name, args.agent_version, args.model,
+            args.model_version, args.reasoning,
+        ))
+        if existing is not None:
+            if spec_defining:
+                log.error(
+                    "%s is an existing evaluation; its spec is frozen. "
+                    "Only --repetitions may be passed when re-running it.", args.ref,
+                )
+                return 2
+            evaluation_id = args.ref
+        else:
+            if not args.repo:
+                log.error("--repo is required when creating a new evaluation")
+                return 2
+            task: dict = {}
+            if args.task_file:
+                task = {"description": Path(args.task_file).read_text("utf-8")}
+            elif args.task:
+                task = {"description": args.task}
+            try:
+                evaluation_id = service.create_spec(
+                    args.ref,
+                    repo=args.repo,
+                    commit=args.commit,
+                    task=task,
+                    verifiers=_parse_verifiers(args),
+                    agent_command=shlex.split(args.agent_cmd) if args.agent_cmd else None,
+                    target_agent=args.target_agent,
+                    target_override=args.target,
+                    agent_name=args.agent_name,
+                    agent_version=args.agent_version,
+                    model_name=args.model,
+                    model_version=args.model_version,
+                    reasoning_config={"reasoning": args.reasoning} if args.reasoning else None,
+                    execution_limits={"timeout_seconds": args.timeout},
+                    condition_order_mode=args.order,
+                    seed=args.seed,
+                )
+            except EvaluationError as exc:
+                log.error(str(exc))
+                return 2
+        try:
+            comparison_ids = service.run_repetition(evaluation_id, count=args.repetitions)
+        except EvaluationError as exc:
+            log.error(str(exc))
+            return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"evaluation_id": evaluation_id, "comparison_ids": comparison_ids})
+        return 0
+    print(f"{evaluation_id}: {len(comparison_ids)} repetition(s) recorded")
+    for cid in comparison_ids:
+        print(f"  {cid}")
+    return 0
+
+
+def _placement_scope(row: dict) -> str:
+    scope_type = row.get("scope_type") or "global"
+    scope_value = row.get("scope_value")
+    return scope_type if not scope_value else f"{scope_type}: {scope_value}"
+
+
+def _placement_payload(payload: object) -> dict:
+    """Convert sqlite rows / serialized diagnostics for the CLI boundary only."""
+
+    if not isinstance(payload, dict):
+        payload = dict(payload)
+    out = dict(payload)
+    out["proposal_set"] = dict(out.get("proposal_set") or {})
+    proposals = []
+    for proposal in out.get("proposals") or []:
+        proposal = dict(proposal)
+        diagnostics = proposal.get("diagnostics")
+        if diagnostics is None:
+            diagnostics = proposal.pop("diagnostics_json", None)
+        if isinstance(diagnostics, str):
+            try:
+                diagnostics = json.loads(diagnostics)
+            except (TypeError, ValueError):
+                diagnostics = [diagnostics]
+        proposal["diagnostics"] = diagnostics or []
+        proposals.append(proposal)
+    out["proposals"] = proposals
+    out["evidence"] = [dict(item) for item in out.get("evidence") or []]
+    return out
+
+
+def _read_placement_set(repo: Repository, experience_id: str) -> dict | None:
+    """Assemble the repository's normalized Stage 6 read contract for CLI.
+
+    The storage layer deliberately exposes rows separately so Stage 7 can use
+    them independently.  The CLI needs one evidence-backed display payload.
+    """
+
+    proposal_set = repo.get_placement_proposal_set(experience_id)
+    if proposal_set is None:
+        return None
+    proposals = [dict(row) for row in repo.get_placement_proposals(experience_id)]
+    by_occurrence: dict[str, dict] = {}
+    for proposal in proposals:
+        for row in repo.get_placement_proposal_evidence(proposal["id"]):
+            item = dict(row)
+            item["relationship"] = item.get("classification") or item.get("role")
+            item.pop("project_root", None)
+            by_occurrence.setdefault(item["occurrence_id"], item)
+    return {
+        "proposal_set": dict(proposal_set),
+        "proposals": proposals,
+        "evidence": list(by_occurrence.values()),
+    }
+
+
+def _lifecycle_service(args: argparse.Namespace):
+    from trajweave.lifecycle.service import LifecycleService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, LifecycleService(Repository(db), paths)
+
+
+def cmd_lifecycle_list(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rows = service.list(status=args.status)
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No lifecycle policies yet. Run 'trajweave lifecycle adopt <review-id>'.")
+        return 0
+    print(f"{'POLICY':<20}  {'STATUS':<9}  {'VERSION':>7}  {'PLACEMENT':<13}  SCOPE")
+    for r in rows:
+        scope = _placement_scope({"scope_type": r.get("current_scope_type"), "scope_value": r.get("current_scope_value")})
+        print(f"{r['id']:<20}  {r['status']:<9}  {int(r.get('current_version_number') or 0):>7}  "
+              f"{(r.get('current_placement_type') or '-'):<13}  {scope}")
+    return 0
+
+
+def cmd_lifecycle_show(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        payload = service.show(args.policy_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+        return 0
+    policy = payload["policy"]
+    current = payload.get("current_version")
+    print(f"{policy['id']}  status={policy['status']}")
+    if current:
+        print(f"  version {current['version_number']}: {current['placement_type']} ({current['status']})")
+        print(f"  content : {current['content'][:200]}")
+    evidence = payload.get("evidence")
+    if evidence:
+        print(f"  evidence: {evidence['improved']} improved / {evidence['unchanged']} unchanged / "
+              f"{evidence['regressed']} regressed / {evidence['invalid']} invalid / {evidence['incomparable']} incomparable")
+    print(f"  versions: {len(payload['versions'])}  lineage edges: {len(payload['lineage'])}  "
+          f"recommendations: {len(payload['recommendations'])}")
+    for rec in payload["recommendations"]:
+        print(f"    [{rec['status']}] {rec['id']}: {rec['operation']} ({', '.join(rec['reason_codes']) or 'n/a'})")
+    for action in payload["actions"]:
+        print(f"    action {action['created_at']}: {action['action']} -> {action.get('to_status')}")
+    return 0
+
+
+def cmd_lifecycle_adopt(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        policy_id = service.adopt(args.review_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": policy_id})
+        return 0
+    print(f"{policy_id}: adopted from review {args.review_id}")
+    return 0
+
+
+def cmd_lifecycle_recommend(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rec = service.recommend(args.policy_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rec)
+        return 0
+    print(f"{rec['id']}: recommend {rec['operation']}  (strength={rec['strength']})")
+    print(f"  reasons: {', '.join(rec['reason_codes']) or 'n/a'}")
+    print(f"  {rec['explanation']}")
+    for note in rec.get("counter_evidence") or []:
+        print(f"  counter-evidence: {note}")
+    return 0
+
+
+def cmd_lifecycle_duplicates(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        rows = service.duplicate_candidates()
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No duplicate-content policies detected.")
+        return 0
+    for row in rows:
+        print(f"DUPLICATE_POLICY: {', '.join(row['policy_ids'])}")
+    return 0
+
+
+def cmd_lifecycle_rewrite(args: argparse.Namespace) -> int:
+    content = args.content if args.content is not None else (Path(args.file).read_text("utf-8") if args.file else None)
+    if content is None:
+        log.error("--content or --file is required")
+        return 2
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.rewrite(args.policy_id, content, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: rewrite recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_promote(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.promote(
+            args.policy_id, target_placement=args.target_placement, scope_type=args.scope_type,
+            scope_value=args.scope_value, target_agent=args.target_agent, target_override=args.target,
+            confirm_global=args.confirm_global, reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: promote recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_demote(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.demote(
+            args.policy_id, target_placement=args.target_placement, scope_type=args.scope_type,
+            scope_value=args.scope_value, target_agent=args.target_agent, target_override=args.target,
+            reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: demote recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_merge(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        new_policy_id = service.merge(
+            args.policy_a, args.policy_b, content=args.content,
+            allow_cross_scope=args.allow_cross_scope, reason=args.reason,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": new_policy_id})
+        return 0
+    print(f"{new_policy_id}: merge of {args.policy_a} + {args.policy_b} recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_split(args: argparse.Namespace) -> int:
+    try:
+        children = json.loads(Path(args.children_file).read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        log.error("could not read --children-file: %s", exc)
+        return 2
+    db, service = _lifecycle_service(args)
+    try:
+        child_ids = service.split(args.policy_id, children, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"child_policy_ids": child_ids})
+        return 0
+    print(f"split into {len(child_ids)} child polic{'y' if len(child_ids) == 1 else 'ies'} (created disabled):")
+    for cid in child_ids:
+        print(f"  {cid}")
+    return 0
+
+
+def _lifecycle_toggle(args: argparse.Namespace, action: str) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        getattr(service, action)(args.policy_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"policy_id": args.policy_id, "action": action})
+        return 0
+    print(f"{args.policy_id}: {action}d")
+    return 0
+
+
+def cmd_lifecycle_disable(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "disable")
+
+
+def cmd_lifecycle_enable(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "enable")
+
+
+def cmd_lifecycle_prune(args: argparse.Namespace) -> int:
+    return _lifecycle_toggle(args, "prune")
+
+
+def cmd_lifecycle_rollback(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        version_id = service.rollback(args.policy_id, args.version_number, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"version_id": version_id})
+        return 0
+    print(f"{version_id}: rollback to version {args.version_number} recorded; preview/apply remain explicit")
+    return 0
+
+
+def cmd_lifecycle_preview(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.preview(args.policy_id, project_root=args.project, target_agent=args.target_agent, target_override=args.target)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(result)
+        return 0
+    print(f"Preview: {result['target']['path']}")
+    print(result.get("unified_diff") or "(no changes)")
+    return 0
+
+
+def cmd_lifecycle_apply(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.apply(
+            args.policy_id, project_root=args.project, dry_run=args.dry_run,
+            target_agent=args.target_agent, target_override=args.target, confirm_global=args.confirm_global,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(result)
+        return 0
+    if args.dry_run:
+        print(f"Dry-run: {result['target_path']}")
+        print(result.get("unified_diff") or "(no changes)")
+        print("Writes: no")
+    else:
+        print(f"{result['outcome']}: {result['target_path']}")
+    return 0
+
+
+def cmd_lifecycle_accept_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        result = service.accept_recommendation(
+            args.recommendation_id, confirm_global=args.confirm_global, target_placement=args.target_placement,
+        )
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"result": result})
+        return 0
+    print(f"{args.recommendation_id}: accepted -> {result}")
+    return 0
+
+
+def cmd_lifecycle_reject_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        service.reject_recommendation(args.recommendation_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"recommendation_id": args.recommendation_id, "status": "rejected"})
+        return 0
+    print(f"{args.recommendation_id}: rejected")
+    return 0
+
+
+def cmd_lifecycle_defer_recommendation(args: argparse.Namespace) -> int:
+    db, service = _lifecycle_service(args)
+    try:
+        service.defer_recommendation(args.recommendation_id, reason=args.reason)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json({"recommendation_id": args.recommendation_id, "status": "deferred"})
+        return 0
+    print(f"{args.recommendation_id}: deferred")
     return 0
 
 
