@@ -814,6 +814,8 @@ async function viewExperience(view, id) {
   frag.push(el("h2", { text: "Candidate reusable lesson" }));
   frag.push(el("p", {}, e.reusable_lesson || "-"));
 
+  frag.push(renderPlacement(data.placement));
+
   frag.push(el("h2", { text: "Confidence" }));
   const ct = el("tbody");
   const addRow = (k, v) => ct.append(el("tr", {}, el("td", { text: k }), el("td", { class: "mono", text: v })));
@@ -860,6 +862,122 @@ async function viewExperience(view, id) {
   );
 
   view.replaceChildren(...frag);
+}
+
+function placementLabel(kind) {
+  return {
+    ignore: "Ignore / Defer",
+    global_rule: "Global Rule",
+    project_rule: "Project Rule",
+    scoped_rule: "Scoped Rule",
+    skill: "Skill",
+  }[kind] || kind || "-";
+}
+
+function placementScope(proposal) {
+  const type = proposal.scope_type || "global";
+  return proposal.scope_value ? `${type}: ${proposal.scope_value}` : type;
+}
+
+function diagnosticText(diagnostic) {
+  if (typeof diagnostic === "string") return diagnostic;
+  if (!diagnostic || typeof diagnostic !== "object") return "";
+  const polarity = diagnostic.sign || diagnostic.polarity || "";
+  const sign = polarity ? `${polarity} ` : "";
+  return sign + (diagnostic.message || diagnostic.reason || diagnostic.feature || "");
+}
+
+function renderPlacement(placement) {
+  const parts = [el("h2", { text: "Placement proposal" })];
+  if (!placement || !(placement.proposals || []).length) {
+    parts.push(
+      el(
+        "div",
+        { class: "empty placement-empty" },
+        el("p", { text: "No placement proposal has been generated for this experience." }),
+        el("p", {}, "Generate proposals with ", el("code", { text: "trajweave placements generate" }), ".")
+      )
+    );
+    return el("section", { class: "placement" }, ...parts);
+  }
+
+  const proposals = placement.proposals.slice().sort((a, b) => Number(a.rank) - Number(b.rank));
+  const recommended = proposals[0];
+  parts.push(
+    el(
+      "div",
+      { class: "placement-recommended" },
+      el("div", { class: "muted", text: "Recommended" }),
+      el("div", { class: "placement-recommendation" },
+        el("strong", { text: placementLabel(recommended.placement_type) }),
+        " ",
+        confPill(recommended.score),
+        el("span", { class: "muted", text: `  Scope: ${placementScope(recommended)}` })
+      ),
+      recommended.proposed_content
+        ? el("p", { class: "placement-content", text: recommended.proposed_content })
+        : null
+    )
+  );
+
+  parts.push(el("h3", { text: "Alternatives" }));
+  const tbody = el("tbody");
+  for (const proposal of proposals) {
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { text: String(proposal.rank || "-") }),
+        el("td", { text: placementLabel(proposal.placement_type) }),
+        el("td", {}, confPill(proposal.score)),
+        el("td", { class: "mono", text: placementScope(proposal) }),
+        el("td", { class: "task", text: proposal.proposed_content || "-" })
+      )
+    );
+  }
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el("thead", {}, el("tr", {}, ...["Rank", "Placement", "Score", "Scope", "Canonical knowledge"].map((h) => el("th", { text: h })))),
+      tbody
+    )
+  );
+
+  const diagnostics = recommended.diagnostics || [];
+  parts.push(el("h3", { text: "Why this is recommended" }));
+  if (diagnostics.length) {
+    const list = el("ul", { class: "placement-diagnostics" });
+    diagnostics.forEach((d) => {
+      const text = diagnosticText(d);
+      if (text) list.append(el("li", { text }));
+    });
+    parts.push(list);
+  } else {
+    parts.push(el("p", { class: "muted", text: "No diagnostics were recorded." }));
+  }
+
+  const evidence = placement.evidence || [];
+  if (evidence.length) {
+    parts.push(el("h3", { text: `Placement evidence (${evidence.length})` }));
+    parts.push(el("p", { class: "muted", text: "The proposal remains linked to the Stage 5 evidence used to score it." }));
+    const evTable = el("tbody");
+    evidence.forEach((ev) => {
+      const range = ev.start_sequence && ev.end_sequence ? `?range=${ev.start_sequence}-${ev.end_sequence}` : "";
+      evTable.append(
+        el(
+          "tr",
+          {},
+          el("td", { class: "id-cell" }, el("a", { href: `#/session/${ev.trajectory_id}${range}` }, ev.trajectory_id || "-")),
+          el("td", {}, el("span", { class: "pill st-" + relClass(ev.relationship), text: ev.relationship || "-" })),
+          el("td", { text: ev.start_sequence === ev.end_sequence ? `seq ${ev.start_sequence}` : `seq ${ev.start_sequence || "-"}-${ev.end_sequence || "-"}` }),
+          el("td", { class: "muted", text: ev.project_name || "-" })
+        )
+      );
+    });
+    parts.push(el("table", { class: "tbl" }, el("thead", {}, el("tr", {}, ...["Session", "Relationship", "Events", "Project"].map((h) => el("th", { text: h })))), evTable));
+  }
+  return el("section", { class: "placement" }, ...parts);
 }
 function relClass(rel) {
   if (rel === "support") return "success";
