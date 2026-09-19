@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
 from tests.conftest import make_claude_session, make_codex_session
+
 from trajweave.ingest.importer import Importer
 from trajweave.projects.registry import ProjectRegistry
 from trajweave.storage.database import Database

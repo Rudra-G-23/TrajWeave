@@ -20,13 +20,18 @@ when its ``tool_result`` arrives.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from trajweave.adapters.base import BaseAdapter, iter_jsonl
 from trajweave.models.enums import Agent, EventType, TaskSource
 from trajweave.models.events import NormalizedEvent
-from trajweave.models.trajectory import DiscoveredSession, NormalizedTrajectory, SourceSessionRef
+from trajweave.models.trajectory import (
+    DiscoveredSession,
+    NormalizedTrajectory,
+    SourceSessionRef,
+)
 from trajweave.normalization.commands import classify_command, command_event_family
 from trajweave.normalization.paths import relativize
 from trajweave.normalization.redaction import redact
@@ -50,6 +55,14 @@ _PEEK_LINES = 60
 
 
 class ClaudeAdapter(BaseAdapter):
+    """Parses Claude Code JSONL sessions into normalized trajectories.
+
+    Tool calls and their results arrive on separate records, so a ``tool_use``
+    is buffered as pending and only turned into ``file_*`` / ``command`` /
+    ``tool_call`` events once its matching ``tool_result`` is seen (see the
+    module docstring for the record layout).
+    """
+
     agent = Agent.CLAUDE
     agent_name = "claude"
     root_env_var = "TRAJWEAVE_CLAUDE_ROOT"
@@ -146,7 +159,7 @@ class ClaudeAdapter(BaseAdapter):
         self._finalize(traj, ctx, session)
         return traj
 
-    def _handle_record(self, obj: dict, traj: NormalizedTrajectory, ctx: "_ClaudeState") -> None:
+    def _handle_record(self, obj: dict, traj: NormalizedTrajectory, ctx: _ClaudeState) -> None:
         rtype = obj.get("type")
         ts = to_iso(obj.get("timestamp"))
 
@@ -183,7 +196,7 @@ class ClaudeAdapter(BaseAdapter):
 
     # -- user records -------------------------------------------------
     def _handle_user(
-        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ClaudeState"
+        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ClaudeState
     ) -> None:
         msg = obj.get("message")
         if not isinstance(msg, dict):
@@ -233,7 +246,7 @@ class ClaudeAdapter(BaseAdapter):
 
     # -- assistant records ------------------------------------------
     def _handle_assistant(
-        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ClaudeState"
+        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ClaudeState
     ) -> None:
         msg = obj.get("message")
         if not isinstance(msg, dict):
@@ -284,7 +297,7 @@ class ClaudeAdapter(BaseAdapter):
             ctx.aborted = True
 
     def _handle_system(
-        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ClaudeState"
+        self, obj: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ClaudeState
     ) -> None:
         subtype = obj.get("subtype")
         if subtype == "compact_boundary":
@@ -300,7 +313,7 @@ class ClaudeAdapter(BaseAdapter):
         tool_use_result: Any,
         ts: str | None,
         traj: NormalizedTrajectory,
-        ctx: "_ClaudeState",
+        ctx: _ClaudeState,
     ) -> None:
         call = ctx.pending.pop(block.get("tool_use_id"), None)
         name = (call or {}).get("name") or "unknown"
@@ -381,7 +394,7 @@ class ClaudeAdapter(BaseAdapter):
         block: dict,
         ts: str | None,
         traj: NormalizedTrajectory,
-        ctx: "_ClaudeState",
+        ctx: _ClaudeState,
         meta_extra: dict,
     ) -> None:
         command = tinput.get("command") or ""
@@ -423,7 +436,7 @@ class ClaudeAdapter(BaseAdapter):
                 metadata={"command_kind": str(kind), "exit_code": exit_code},
             ))
 
-    def _flush_pending(self, traj: NormalizedTrajectory, ctx: "_ClaudeState") -> None:
+    def _flush_pending(self, traj: NormalizedTrajectory, ctx: _ClaudeState) -> None:
         for call in ctx.pending.values():
             name = call.get("name") or "unknown"
             traj.add_event(NormalizedEvent(
@@ -435,7 +448,7 @@ class ClaudeAdapter(BaseAdapter):
 
     # -- finalization ----------------------------------------------
     def _finalize(
-        self, traj: NormalizedTrajectory, ctx: "_ClaudeState", session: DiscoveredSession
+        self, traj: NormalizedTrajectory, ctx: _ClaudeState, session: DiscoveredSession
     ) -> None:
         traj.cwd = traj.cwd or session.cwd
         traj.git_branch = traj.git_branch or session.git_branch
@@ -499,7 +512,7 @@ def _join_text(content: Any) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _accumulate_usage(ctx: "_ClaudeState", usage: Any) -> None:
+def _accumulate_usage(ctx: _ClaudeState, usage: Any) -> None:
     if not isinstance(usage, dict):
         return
     for key in (

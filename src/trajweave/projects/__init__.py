@@ -1,3 +1,5 @@
+"""Git repository-root detection and the explicit project opt-in registry."""
+
 from __future__ import annotations
 
 from trajweave.projects.git import GitInfo, find_repo_root, read_git_info

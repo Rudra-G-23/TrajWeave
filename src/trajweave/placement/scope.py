@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import json
 import posixpath
 import re
-from typing import Any, Iterable
+from collections import Counter
+from collections.abc import Iterable
+from typing import Any
 
 from trajweave.experience.context import command_context
 from trajweave.placement.models import Scope

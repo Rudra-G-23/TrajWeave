@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from trajweave.review.targets import SafetyError, apply_preview, build_preview, resolve_target
+from trajweave.review.targets import (
+    SafetyError,
+    apply_preview,
+    build_preview,
+    resolve_target,
+)
 
 
 def _target(tmp_path, name="AGENTS.md"):

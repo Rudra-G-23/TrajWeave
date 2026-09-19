@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from trajweave.experience import ExperienceConfig, ExperienceExtractor
+from trajweave.experience import ExperienceExtractor
 from trajweave.models.enums import Agent, EventType, FinalStatus, TaskSource
 from trajweave.models.events import NormalizedEvent
 from trajweave.models.trajectory import NormalizedTrajectory, SourceSessionRef
@@ -118,7 +118,6 @@ def test_contradiction_lowers_confidence(db):
     before = dict(ExperienceExtractor(repo).run().top_candidates[0])["confidence"]
 
     _seed(repo, "s4", "p2", MODEL_PASS_NO_MIGRATION)
-    after_exps = [dict(e) for e in Repository(db).list_experiences() if e["group_key"] == "fr::migration::test"]
     ExperienceExtractor(repo).run()
     after = [dict(e) for e in repo.list_experiences() if e["group_key"] == "fr::migration::test"][0]
     assert after["contradiction_count"] == 1

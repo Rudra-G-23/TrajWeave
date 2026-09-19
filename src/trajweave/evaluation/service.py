@@ -63,6 +63,15 @@ def _timeout_for(spec: dict[str, Any]) -> int:
 
 
 class EvaluationService:
+    """Owns the Stage 8 evaluation state machine: freeze the spec for an
+    eligible review, then run any number of paired baseline/candidate
+    repetitions against that frozen spec.
+
+    Like :class:`~trajweave.review.service.ReviewService` it is the single
+    read-model shared by the CLI and the UI. Candidate policy application during
+    a trial reuses the Stage 7 safety layer - there is no second, weaker writer.
+    """
+
     def __init__(self, repo: Repository, paths: TrajWeavePaths):
         self.repo = repo
         self.paths = paths

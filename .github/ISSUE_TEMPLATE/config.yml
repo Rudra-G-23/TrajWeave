@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Rudra-G-23/TrajWeave/security/advisories/new
+    about: >-
+      Do not open a public issue for an exploitable vulnerability. Report it
+      privately through GitHub's "Report a vulnerability" form. See SECURITY.md.
+  - name: Question or usage help
+    url: https://github.com/Rudra-G-23/TrajWeave#quick-start
+    about: >-
+      For questions about installing or using TrajWeave, please read the README
+      first. If Discussions are enabled on this repository, ask there.

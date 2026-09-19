@@ -18,7 +18,6 @@ never a second, weaker writer.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from trajweave.config.paths import TrajWeavePaths
@@ -56,6 +55,16 @@ def _decode(value: Any, default: Any) -> Any:
 
 
 class LifecycleService:
+    """Owns the Stage 9 policy lifecycle state machine and version history.
+
+    Operations that change what a policy *is* (rewrite / promote / demote /
+    merge / split / rollback) only ever append an immutable ``policy_versions``
+    row plus ``policy_lineage`` edges and repoint ``policies.current_version_id``
+    - they never mutate a historical row and never touch the filesystem. Only
+    :meth:`preview` / :meth:`apply` write to disk, and only through the Stage 7
+    safety layer.
+    """
+
     def __init__(self, repo: Repository, paths: TrajWeavePaths):
         self.repo = repo
         self.paths = paths

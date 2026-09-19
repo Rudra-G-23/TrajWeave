@@ -1,3 +1,8 @@
+"""Trajectory-level dataclasses: a discovered session, its source reference,
+per-file touch summary, and the fully :class:`NormalizedTrajectory` an adapter
+returns.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -50,7 +55,7 @@ class FileTouch:
     was_modified: bool = False
     was_deleted: bool = False
 
-    def merge(self, other: "FileTouch") -> None:
+    def merge(self, other: FileTouch) -> None:
         self.was_read |= other.was_read
         self.was_created |= other.was_created
         self.was_modified |= other.was_modified
@@ -118,7 +123,7 @@ class NormalizedTrajectory:
         else:
             entry.merge(touch)
 
-    def finalize(self) -> "NormalizedTrajectory":
+    def finalize(self) -> NormalizedTrajectory:
         """Assign sequence numbers and derive start/end timestamps if missing.
 
         Event order is the adapter's stream order - these transcripts are

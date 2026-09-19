@@ -5,8 +5,9 @@ Everything TrajWeave persists lives under a single global home directory,
 ``TRAJWEAVE_HOME`` environment variable (used heavily by the test-suite so it
 never touches a real user's data).
 
-The only thing TrajWeave ever writes *inside a tracked repository* is
-``<repo>/.trajweave/project.json`` - created by ``trajweave init``.
+The only things TrajWeave ever writes *inside a tracked repository* are
+``<repo>/.trajweave/project.json`` and a ``.trajweave/`` entry in
+``<repo>/.gitignore`` - both created by ``trajweave init``.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ class TrajWeavePaths:
     def cache_dir(self) -> Path:
         return self.home / "cache"
 
-    def ensure(self) -> "TrajWeavePaths":
+    def ensure(self) -> TrajWeavePaths:
         """Create the home directory tree if it does not yet exist."""
 
         self.home.mkdir(parents=True, exist_ok=True)

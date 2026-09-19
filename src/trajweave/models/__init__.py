@@ -1,3 +1,10 @@
+"""The normalized schema every adapter targets.
+
+Small, stable dataclasses (:class:`NormalizedTrajectory`, :class:`NormalizedEvent`,
+:class:`FileTouch`) and the closed enums that constrain them. Everything the
+storage layer persists is built out of these types.
+"""
+
 from __future__ import annotations
 
 from trajweave.models.enums import Agent, EventType, FinalStatus, TaskSource

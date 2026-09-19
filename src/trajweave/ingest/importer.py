@@ -12,10 +12,10 @@ replaced in place (keeping its ``TW-`` id).
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from trajweave.adapters import ADAPTERS
 from trajweave.adapters.base import BaseAdapter
@@ -72,6 +72,15 @@ class ImportStats:
 
 
 class Importer:
+    """Runs one historical import pass over the configured agent session stores.
+
+    A pass is idempotent and restart-safe: a session already stored with an
+    unchanged content hash is skipped, a changed session is re-parsed and its
+    trajectory replaced in place (its ``TW-`` id is preserved), and a session
+    whose repository was never opted in is recorded as ``ignored_unregistered``
+    without being parsed.
+    """
+
     def __init__(
         self,
         db: Database,

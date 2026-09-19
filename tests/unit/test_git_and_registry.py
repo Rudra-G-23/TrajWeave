@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from trajweave.projects.git import find_repo_root, read_git_info
-from trajweave.projects.registry import ProjectRegistry, RepoNotFoundError, project_id_for_root
+from trajweave.projects.registry import (
+    ProjectRegistry,
+    RepoNotFoundError,
+    project_id_for_root,
+)
 from trajweave.storage.database import Database
 from trajweave.storage.repository import Repository
 
@@ -48,6 +52,53 @@ def test_init_creates_marker_and_registers(tmp_path, git_repo):
     assert data["enabled"] is True
     rows = reg.list_projects()
     assert len(rows) == 1 and rows[0]["id"] == project.project_id
+
+
+def test_init_creates_gitignore_when_absent(tmp_path, git_repo):
+    reg = _registry(tmp_path)
+    assert not (git_repo / ".gitignore").exists()
+    reg.init(git_repo)
+    contents = (git_repo / ".gitignore").read_text()
+    assert contents == "# TrajWeave opt-in marker\n.trajweave/\n"
+
+
+def test_init_appends_marker_to_existing_gitignore(tmp_path, git_repo):
+    reg = _registry(tmp_path)
+    gitignore = git_repo / ".gitignore"
+    gitignore.write_text("*.pyc\n__pycache__/\n")
+    reg.init(git_repo)
+    contents = gitignore.read_text()
+    assert contents == (
+        "*.pyc\n__pycache__/\n\n# TrajWeave opt-in marker\n.trajweave/\n"
+    )
+
+
+def test_init_appends_newline_before_marker_when_file_lacks_trailing_newline(tmp_path, git_repo):
+    reg = _registry(tmp_path)
+    gitignore = git_repo / ".gitignore"
+    gitignore.write_text("build/")
+    reg.init(git_repo)
+    assert gitignore.read_text() == (
+        "build/\n\n# TrajWeave opt-in marker\n.trajweave/\n"
+    )
+
+
+def test_init_does_not_duplicate_existing_gitignore_entry(tmp_path, git_repo):
+    reg = _registry(tmp_path)
+    gitignore = git_repo / ".gitignore"
+    gitignore.write_text("node_modules/\n.trajweave/\n")
+    reg.init(git_repo)
+    assert gitignore.read_text() == "node_modules/\n.trajweave/\n"
+    reg.init(git_repo)
+    assert gitignore.read_text().count(".trajweave/") == 1
+
+
+def test_init_recognises_unslashed_gitignore_entry(tmp_path, git_repo):
+    reg = _registry(tmp_path)
+    gitignore = git_repo / ".gitignore"
+    gitignore.write_text(".trajweave\n")
+    reg.init(git_repo)
+    assert gitignore.read_text() == ".trajweave\n"
 
 
 def test_init_is_idempotent(tmp_path, git_repo):
