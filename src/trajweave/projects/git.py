@@ -9,6 +9,7 @@ opportunistically for remote/branch/commit when the working copy still exists.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,15 @@ class GitInfo:
     remote: str | None = None
     branch: str | None = None
     commit: str | None = None
+
+
+def _is_shared_system_root(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return resolved == Path(resolved.anchor) or resolved == temp_root
 
 
 def find_repo_root(start: str | Path) -> Path | None:
@@ -38,7 +48,7 @@ def find_repo_root(start: str | Path) -> Path | None:
 
     for candidate in [current, *current.parents]:
         git_marker = candidate / ".git"
-        if git_marker.exists():
+        if git_marker.exists() and not _is_shared_system_root(candidate):
             return candidate
     return None
 
