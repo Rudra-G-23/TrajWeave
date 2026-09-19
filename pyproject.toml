@@ -9,7 +9,7 @@ description = "Local-first research substrate for coding-agent trajectory learni
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Rudra Prasad Bhuyan", email = "rudra@algen.ai" }]
+authors = [{ name = "Rudra Prasad Bhuyan", email = "rudraprasadbhuyan999@gmail.com" }]
 keywords = ["coding-agent", "trajectory", "codex", "claude-code", "observability"]
 classifiers = [
     "Development Status :: 3 - Alpha",
