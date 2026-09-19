@@ -1,0 +1,44 @@
+"""Small filesystem helpers with Windows sharing-violation handling."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TypeVar
+
+T = TypeVar("T")
+
+_WINDOWS_TRANSIENT_WINERRORS = {5, 32}
+_RETRY_ATTEMPTS = 8
+_INITIAL_RETRY_DELAY_SECONDS = 0.025
+
+
+def retry_windows_sharing_violation(
+    operation: Callable[[], T],
+    *,
+    is_windows: bool | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run an operation, retrying transient Windows sharing violations."""
+
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except OSError as exc:
+            if not is_windows or getattr(exc, "winerror", None) not in _WINDOWS_TRANSIENT_WINERRORS:
+                raise
+            if attempt == _RETRY_ATTEMPTS - 1:
+                raise
+            sleep(_INITIAL_RETRY_DELAY_SECONDS * (2**attempt))
+    raise AssertionError("unreachable")
+
+
+def remove_tree(path: Path) -> None:
+    """Remove a directory tree, retrying transient Windows sharing violations."""
+
+    retry_windows_sharing_violation(lambda: shutil.rmtree(path))

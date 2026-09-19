@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from trajweave.utils.filesystem import retry_windows_sharing_violation
+
 
 class SafetyError(ValueError):
     """A target or rendered policy failed a safety check."""
@@ -366,9 +368,18 @@ def _atomic_replace(path: Path, data: bytes, root: Path) -> None:
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
-                os.replace(temp_path, path)
+                retry_windows_sharing_violation(
+                    lambda: os.replace(temp_path, path),
+                    is_windows=True,
+                )
             except OSError:
-                temp_path.unlink(missing_ok=True)
+                try:
+                    retry_windows_sharing_violation(
+                        lambda: temp_path.unlink(missing_ok=True),
+                        is_windows=True,
+                    )
+                except OSError:
+                    pass
                 raise
             return
         except SafetyError:

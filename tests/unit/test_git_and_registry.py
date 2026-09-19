@@ -167,8 +167,8 @@ def test_deleted_repo_keeps_project_row(tmp_path, git_repo):
     rows = reg.list_projects()
     assert rows[0]["id"] == project.project_id
     # resolution now fails (nothing on disk) but the row is untouched.
-    import shutil
+    from trajweave.utils.filesystem import remove_tree
 
-    shutil.rmtree(git_repo)
+    remove_tree(git_repo)
     assert reg.resolve_for_path(str(git_repo)) is None
     assert len(reg.list_projects()) == 1

@@ -19,10 +19,8 @@ sandbox. This is a deliberate, documented limitation, not an oversight.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,6 +28,7 @@ from pathlib import Path
 from trajweave.evaluation.errors import EvaluationError
 from trajweave.projects.git import find_repo_root
 from trajweave.projects.registry import _is_unsafe_project_root
+from trajweave.utils.filesystem import remove_tree
 
 _GIT_TIMEOUT = 30
 
@@ -125,10 +124,7 @@ def isolated_workspaces(repo_root: Path, commit: str) -> Iterator[tuple[Path, Pa
 def _remove_workspace(path: Path) -> None:
     """Remove an ephemeral workspace, accommodating transient Windows locks."""
 
-    for attempt in range(5):
-        shutil.rmtree(path, ignore_errors=True)
-        if not path.exists():
-            return
-        if os.name != "nt":
-            return
-        time.sleep(0.1 * (attempt + 1))
+    try:
+        remove_tree(path)
+    except OSError:
+        pass

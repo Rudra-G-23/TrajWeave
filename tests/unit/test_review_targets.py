@@ -47,6 +47,34 @@ def test_preview_and_apply_use_safe_windows_fallback(tmp_path, monkeypatch):
     assert "trajweave:managed" in (root / "AGENTS.md").read_text("utf-8")
 
 
+def test_windows_fallback_retries_transient_replace_failure(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    class SharingViolation(OSError):
+        winerror = 5
+
+    root, target = _target(tmp_path)
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    real_replace = targets_mod.os.replace
+    attempts = []
+
+    def replace(source, destination):
+        attempts.append((source, destination))
+        if len(attempts) < 3:
+            raise SharingViolation("access denied")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(targets_mod.os, "replace", replace)
+    preview = build_preview(
+        target=target,
+        experience_id="E-0001",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+    assert apply_preview(preview) == "applied"
+    assert len(attempts) == 3
+
+
 def test_stale_preview_refuses_human_edit(tmp_path):
     root, target = _target(tmp_path)
     path = root / "AGENTS.md"
