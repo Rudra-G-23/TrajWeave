@@ -11,10 +11,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    """Every test gets its own TrajWeave home - never touch the real ~/.trajweave."""
+    """Keep TrajWeave and agent-session storage inside the test directory."""
 
     home = tmp_path / "tw-home"
     monkeypatch.setenv("TRAJWEAVE_HOME", str(home))
+    for variable, name in (
+        ("TRAJWEAVE_CODEX_ROOT", "codex-sessions"),
+        ("TRAJWEAVE_CLAUDE_ROOT", "claude-projects"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        monkeypatch.setenv(variable, str(root))
     return home
 
 

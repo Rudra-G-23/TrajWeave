@@ -47,9 +47,17 @@ Install the package in editable mode with the development extras:
 # with uv (recommended)
 uv sync --extra dev
 
-# or with pip
+# or with pip on macOS/Linux
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+```
+
+On Windows PowerShell, use:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+py -m pip install -e ".[dev]"
 ```
 
 ## Make your change
@@ -69,14 +77,23 @@ Branch name prefixes follow the commit convention below (`feat/`, `fix/`,
 Everything CI enforces, you can run locally.
 
 ```bash
-# full test suite (unit + integration)
+# uv: full test suite (unit + integration)
 uv run pytest
 
-# unit tests only (skip the ones that build a temp git repo)
+# uv: unit tests only (skip the ones that build a temp git repo)
 uv run pytest -m "not integration"
 
-# lint
+# uv: lint
 uv run ruff check .
+```
+
+If you installed with pip instead of uv, activate the virtual environment and
+run the same checks without `uv run`:
+
+```bash
+python -m pytest
+python -m pytest -m "not integration"
+python -m ruff check .
 ```
 
 - Integration tests are marked with `@pytest.mark.integration`; they create a
@@ -85,6 +102,31 @@ uv run ruff check .
   (`[tool.ruff.lint]`). Line length (`E501`) is advisory only and not enforced,
   but keep new code close to the 100-column target and match the style of the
   surrounding file. There is no enforced auto-formatter.
+
+### CI diagnostics and test isolation
+
+The CI test job keeps dependency synchronization, collection, and test
+execution separate so a slow job has an observable phase:
+
+```bash
+uv sync --frozen --extra dev
+uv run --no-sync python -m pytest --collect-only -q
+uv run --no-sync python -m pytest -vv -ra --durations=30
+```
+
+The equivalent commands after a pip-based install are:
+
+```bash
+python -m pytest --collect-only -q
+python -m pytest -vv -ra --durations=30
+```
+
+Each CI test job has a 30-minute limit. The autouse fixture in
+`tests/conftest.py` redirects `TRAJWEAVE_CODEX_ROOT` and
+`TRAJWEAVE_CLAUDE_ROOT` to empty per-test temporary directories. This prevents
+tests that run `trajweave import --all` from scanning a developer's real
+`~/.codex` or `~/.claude` session store, while production commands continue to
+use those default locations when the environment variables are unset.
 
 ## Add tests
 

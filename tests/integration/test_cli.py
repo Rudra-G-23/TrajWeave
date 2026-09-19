@@ -63,8 +63,9 @@ def test_full_cli_flow(tmp_path, git_repo, capsys, monkeypatch):
     sessions = json.loads(out)
     assert sessions[0]["status"] == "imported"
 
-    # re-import: idempotent
+    # re-import: idempotent, with no scan of the real Claude session store
     code, out = _run(capsys, "import", "--all")
+    assert "Claude sessions discovered: 0" in out
     assert "Already imported:       1" in out
 
 
