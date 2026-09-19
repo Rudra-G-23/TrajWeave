@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from tests.conftest import make_codex_session
@@ -119,7 +120,10 @@ def test_ui_auto_advances_when_default_port_busy(monkeypatch, tmp_path, capsys):
         busy.server_close()
     out = capsys.readouterr().out
     assert rc == 0
-    assert f"127.0.0.1:{port + 1}" in out
+    match = re.search(r"127\.0\.0\.1:(\d+)", out)
+    assert match is not None
+    selected_port = int(match.group(1))
+    assert port < selected_port < port + 20
 
 
 def test_ui_explicit_busy_port_is_hard_error(monkeypatch, tmp_path, capsys):

@@ -80,9 +80,15 @@ Run `trajweave --help` or a command's `--help` for current options.
 ## Development
 
 ```bash
-pytest
-pytest -m "not integration"
-ruff check .
+uv sync --extra dev
+uv run pytest
+uv run pytest -m "not integration"
+uv run ruff check .
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md), and [`docs/STAGES.md`](docs/STAGES.md).
+For Windows PowerShell, pip-based setup, CI-equivalent diagnostics, and GitHub
+Actions commands, see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+See [`SECURITY.md`](SECURITY.md) and [`docs/STAGES.md`](docs/STAGES.md) for the
+security policy and architecture stages.

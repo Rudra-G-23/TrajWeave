@@ -128,6 +128,26 @@ tests that run `trajweave import --all` from scanning a developer's real
 `~/.codex` or `~/.claude` session store, while production commands continue to
 use those default locations when the environment variables are unset.
 
+The one-line commands corresponding to the complete CI test and lint steps are:
+
+```bash
+uv run --frozen --extra dev python -m pytest -q
+uv run --no-sync ruff check --output-format=github .
+```
+
+After pushing a branch associated with a pull request, inspect the GitHub run
+with GitHub CLI:
+
+```bash
+git push origin HEAD
+gh run list --workflow ci.yml --limit 5
+gh run watch <RUN_ID> --exit-status
+```
+
+If `gh` is unavailable, open the repository's Actions page and select the
+latest `CI` run. The test job reports dependency synchronization, collection,
+individual test names, and the slowest 30 tests as separate log sections.
+
 ## Add tests
 
 - Unit tests live in `tests/unit/`, integration tests in `tests/integration/`.
