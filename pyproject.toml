@@ -5,12 +5,23 @@ build-backend = "hatchling.build"
 [project]
 name = "trajweave"
 version = "0.5.0"
-description = "Local-first research substrate for coding-agent trajectory learning (data layer, read-only explorer, deterministic experience extraction)."
+description = "Local-first trajectory learning for coding agents. Every run makes the next one better."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Rudra Prasad Bhuyan", email = "rudraprasadbhuyan999@gmail.com" }]
-keywords = ["coding-agent", "trajectory", "codex", "claude-code", "observability"]
+keywords = [
+    "coding-agents",
+    "ai-agents",
+    "agent-trajectories",
+    "trajectory-learning",
+    "agent-observability",
+    "agent-learning",
+    "codex-cli",
+    "claude-code",
+    "local-first",
+    "developer-tools",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
