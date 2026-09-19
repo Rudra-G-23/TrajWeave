@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+
+message: "If you use TrajWeave in your research or work, please cite it using the metadata below."
+
+title: "TrajWeave"
+
+authors:
+  - family-names: "Bhuyan"
+    given-names: "Rudra Prasad"
+
+type: software
+
+abstract: >
+  Local-first trajectory learning for coding agents. Every run makes the next one better.
+  
+repository-code: "https://github.com/Rudra-G-23/TrajWeave"
+
+url: "https://github.com/Rudra-G-23/TrajWeave"
+
+license: "Apache-2.0"
