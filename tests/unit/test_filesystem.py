@@ -21,7 +21,21 @@ def test_retry_windows_sharing_violation_retries_then_succeeds():
 
     assert retry_windows_sharing_violation(operation, is_windows=True, sleep=delays.append) == "done"
     assert len(attempts) == 3
-    assert delays == [0.025, 0.05]
+    assert delays == [0.05, 0.1]
+
+
+def test_retry_windows_sharing_violation_uses_a_bounded_delay():
+    attempts = []
+    delays = []
+
+    def operation():
+        attempts.append(None)
+        raise _SharingViolation("access denied")
+
+    with pytest.raises(_SharingViolation):
+        retry_windows_sharing_violation(operation, is_windows=True, sleep=delays.append)
+    assert len(attempts) == 30
+    assert delays[-1] == 1.0
 
 
 def test_retry_windows_sharing_violation_reraises_non_transient_error():

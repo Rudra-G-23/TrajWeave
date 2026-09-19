@@ -11,9 +11,10 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-_WINDOWS_TRANSIENT_WINERRORS = {5, 32}
-_RETRY_ATTEMPTS = 8
-_INITIAL_RETRY_DELAY_SECONDS = 0.025
+_WINDOWS_TRANSIENT_WINERRORS = {5, 32, 33}
+_RETRY_ATTEMPTS = 30
+_INITIAL_RETRY_DELAY_SECONDS = 0.05
+_MAX_RETRY_DELAY_SECONDS = 1.0
 
 
 def retry_windows_sharing_violation(
@@ -34,7 +35,7 @@ def retry_windows_sharing_violation(
                 raise
             if attempt == _RETRY_ATTEMPTS - 1:
                 raise
-            sleep(_INITIAL_RETRY_DELAY_SECONDS * (2**attempt))
+            sleep(min(_INITIAL_RETRY_DELAY_SECONDS * (2**attempt), _MAX_RETRY_DELAY_SECONDS))
     raise AssertionError("unreachable")
 
 
