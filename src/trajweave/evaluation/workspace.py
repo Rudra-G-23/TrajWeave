@@ -18,9 +18,11 @@ sandbox. This is a deliberate, documented limitation, not an oversight.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -89,7 +91,10 @@ def has_uncommitted_changes(repo_root: Path) -> bool:
 
 
 def _clone_at_commit(source: Path, dest: Path, commit: str) -> None:
-    _run_git(["clone", "--local", "--no-checkout", "--quiet", str(source), str(dest)])
+    clone_args = ["clone", "--local", "--no-checkout", "--quiet"]
+    if os.name == "nt":
+        clone_args.append("--no-hardlinks")
+    _run_git([*clone_args, str(source), str(dest)])
     _run_git(["-C", str(dest), "checkout", "--quiet", "--detach", commit])
     # Isolation must survive a crash: no isolated clone should ever be able to
     # fetch from or push to the developer's real repository.
@@ -114,4 +119,16 @@ def isolated_workspaces(repo_root: Path, commit: str) -> Iterator[tuple[Path, Pa
         _clone_at_commit(repo_root, candidate, commit)
         yield baseline, candidate
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        _remove_workspace(base)
+
+
+def _remove_workspace(path: Path) -> None:
+    """Remove an ephemeral workspace, accommodating transient Windows locks."""
+
+    for attempt in range(5):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        if os.name != "nt":
+            return
+        time.sleep(0.1 * (attempt + 1))

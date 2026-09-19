@@ -32,6 +32,21 @@ def test_preview_preserves_human_content_and_apply_is_idempotent(tmp_path):
     assert path.read_text("utf-8") == first
 
 
+def test_preview_and_apply_use_safe_windows_fallback(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    root, target = _target(tmp_path)
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    preview = build_preview(
+        target=target,
+        experience_id="E-0001",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+    assert apply_preview(preview) == "applied"
+    assert "trajweave:managed" in (root / "AGENTS.md").read_text("utf-8")
+
+
 def test_stale_preview_refuses_human_edit(tmp_path):
     root, target = _target(tmp_path)
     path = root / "AGENTS.md"
