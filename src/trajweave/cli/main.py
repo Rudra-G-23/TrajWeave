@@ -127,6 +127,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_exp.set_defaults(func=lambda _a: (p_exp.print_help() or 0))
 
+    p_placements = sub.add_parser(
+        "placements",
+        help="generate / inspect read-only Stage 6 placement proposals",
+    )
+    placements_sub = p_placements.add_subparsers(dest="placements_command", metavar="<subcommand>")
+
+    pl_generate = placements_sub.add_parser(
+        "generate", help="derive deterministic placement alternatives for eligible experiences"
+    )
+    pl_generate.add_argument("--json", action="store_true", help="machine-readable summary")
+    pl_generate.set_defaults(func=cmd_placements_generate)
+
+    pl_list = placements_sub.add_parser("list", help="list current placement recommendations")
+    pl_list.add_argument(
+        "--type",
+        dest="placement_type",
+        choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"],
+        help="only recommendation sets whose recommended placement has this type",
+    )
+    pl_list.add_argument(
+        "--recommended",
+        choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"],
+        help="alias for --type, retained for explicit recommendation filtering",
+    )
+    pl_list.add_argument("--json", action="store_true", help="machine-readable output")
+    pl_list.set_defaults(func=cmd_placements_list)
+
+    pl_show = placements_sub.add_parser("show", help="show alternatives and evidence for one experience")
+    pl_show.add_argument("experience_id")
+    pl_show.add_argument("--json", action="store_true", help="machine-readable output")
+    pl_show.set_defaults(func=cmd_placements_show)
+
+    p_placements.set_defaults(func=lambda _a: (p_placements.print_help() or 0))
+
     p_ui = sub.add_parser("ui", help="launch the local, read-only trajectory explorer")
     p_ui.add_argument(
         "--port", type=int, default=None,
@@ -457,6 +491,159 @@ def cmd_experiences_review(args: argparse.Namespace) -> int:
         return 2
     print(f"{args.experience_id}: review_status = {args.status}")
     return 0
+
+
+def cmd_placements_generate(args: argparse.Namespace) -> int:
+    """Generate canonical proposals only - never apply them to a repository."""
+
+    from trajweave.placement import PlacementGenerator
+
+    with _open_db(args) as db:
+        result = PlacementGenerator(Repository(db)).run()
+    payload = result.as_dict()
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    print(f"Eligible experiences: {payload['eligible_experiences']}")
+    print(f"Placement proposal sets: {payload['proposal_sets']}")
+    print(f"Regenerated: {payload.get('regenerated', 0)}")
+    print(f"Unchanged: {payload.get('unchanged', 0)}")
+    print(f"Runtime: {payload['runtime_seconds']:.2f}s")
+    return 0
+
+
+def cmd_placements_list(args: argparse.Namespace) -> int:
+    placement_type = args.recommended or args.placement_type
+    with _open_db(args) as db:
+        rows = [
+            dict(row)
+            for row in Repository(db).list_placement_proposal_sets(
+                placement_type=placement_type,
+                recommended=placement_type,
+            )
+        ]
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No placement proposal sets. Run 'trajweave placements generate'.")
+        return 0
+    print(f"{'EXPERIENCE':<12}  {'RECOMMENDED':<14}  {'SCORE':>5}  {'SCOPE':<30}  TITLE")
+    for row in rows:
+        placement_kind = row["recommended_type"]
+        score = row["recommended_score"]
+        scope = _placement_scope({
+            "scope_type": row.get("recommended_scope_type"),
+            "scope_value": row.get("recommended_scope_value"),
+        })
+        print(
+            f"{row['experience_id']:<12}  {placement_kind:<14}  "
+            f"{float(score):>5.2f}  {scope:<30}  {(row.get('experience_title') or '')[:55]}"
+        )
+    return 0
+
+
+def cmd_placements_show(args: argparse.Namespace) -> int:
+    with _open_db(args) as db:
+        payload = _read_placement_set(Repository(db), args.experience_id)
+    if payload is None:
+        log.error("no placement proposal set for experience %s", args.experience_id)
+        return 2
+    payload = _placement_payload(payload)
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    proposal_set = payload.get("proposal_set") or {}
+    proposals = payload.get("proposals") or []
+    evidence = payload.get("evidence") or []
+    print(f"{args.experience_id} placement alternatives")
+    if proposal_set.get("generator_version"):
+        print(f"  generator: {proposal_set['generator_version']}")
+    if proposal_set.get("created_at"):
+        print(f"  generated: {proposal_set['created_at']}")
+    print()
+    for proposal in proposals:
+        scope = _placement_scope(proposal)
+        print(
+            f"  {proposal.get('rank', '-')}. {proposal['placement_type']:<14} "
+            f"{float(proposal['score']):.2f}  scope: {scope}"
+        )
+        if proposal.get("proposed_content"):
+            print(f"     {proposal['proposed_content']}")
+        for diagnostic in proposal.get("diagnostics") or []:
+            sign = (
+                diagnostic.get("sign", diagnostic.get("polarity", ""))
+                if isinstance(diagnostic, dict) else ""
+            )
+            message = diagnostic.get("message", "") if isinstance(diagnostic, dict) else str(diagnostic)
+            print(f"     {sign} {message}".rstrip())
+    if evidence:
+        print("\n  evidence:")
+        for item in evidence:
+            print(
+                f"    {item.get('trajectory_id', '-'):<12}  "
+                f"{item.get('relationship', '-'):<13}  "
+                f"seq {item.get('start_sequence', '-')}-{item.get('end_sequence', '-')}"
+            )
+    return 0
+
+
+def _placement_scope(row: dict) -> str:
+    scope_type = row.get("scope_type") or "global"
+    scope_value = row.get("scope_value")
+    return scope_type if not scope_value else f"{scope_type}: {scope_value}"
+
+
+def _placement_payload(payload: object) -> dict:
+    """Convert sqlite rows / serialized diagnostics for the CLI boundary only."""
+
+    if not isinstance(payload, dict):
+        payload = dict(payload)
+    out = dict(payload)
+    out["proposal_set"] = dict(out.get("proposal_set") or {})
+    proposals = []
+    for proposal in out.get("proposals") or []:
+        proposal = dict(proposal)
+        diagnostics = proposal.get("diagnostics")
+        if diagnostics is None:
+            diagnostics = proposal.pop("diagnostics_json", None)
+        if isinstance(diagnostics, str):
+            try:
+                diagnostics = json.loads(diagnostics)
+            except (TypeError, ValueError):
+                diagnostics = [diagnostics]
+        proposal["diagnostics"] = diagnostics or []
+        proposals.append(proposal)
+    out["proposals"] = proposals
+    out["evidence"] = [dict(item) for item in out.get("evidence") or []]
+    return out
+
+
+def _read_placement_set(repo: Repository, experience_id: str) -> dict | None:
+    """Assemble the repository's normalized Stage 6 read contract for CLI.
+
+    The storage layer deliberately exposes rows separately so Stage 7 can use
+    them independently.  The CLI needs one evidence-backed display payload.
+    """
+
+    proposal_set = repo.get_placement_proposal_set(experience_id)
+    if proposal_set is None:
+        return None
+    proposals = [dict(row) for row in repo.get_placement_proposals(experience_id)]
+    by_occurrence: dict[str, dict] = {}
+    for proposal in proposals:
+        for row in repo.get_placement_proposal_evidence(proposal["id"]):
+            item = dict(row)
+            item["relationship"] = item.get("classification") or item.get("role")
+            item.pop("project_root", None)
+            by_occurrence.setdefault(item["occurrence_id"], item)
+    return {
+        "proposal_set": dict(proposal_set),
+        "proposals": proposals,
+        "evidence": list(by_occurrence.values()),
+    }
 
 
 def cmd_ui(args: argparse.Namespace) -> int:

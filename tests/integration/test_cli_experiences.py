@@ -116,3 +116,54 @@ def test_rebuild_flag(home, capsys):
 def test_extract_unknown_project_exits_2(home, capsys):
     code, out = _run(capsys, "experiences", "extract", "--project", "/no/such/repo")
     assert code == 2
+
+
+def test_placements_generate_list_show_and_invalidate_with_stage5_candidate(home, capsys):
+    """Stage 6 consumes a real Stage 5 candidate, never a fake real DB row."""
+
+    assert _run(capsys, "experiences", "extract")[0] == 0
+
+    code, out = _run(capsys, "placements", "generate", "--json")
+    generated = json.loads(out)
+    assert code == 0
+    assert generated["eligible_experiences"] == 1
+    assert generated["proposal_sets"] == 1
+    assert generated["regenerated"] == 1
+
+    # Same persisted Stage 5 evidence produces no duplicate set or proposals.
+    code, out = _run(capsys, "placements", "generate", "--json")
+    repeated = json.loads(out)
+    assert code == 0
+    assert repeated["regenerated"] == 0
+    assert repeated["unchanged"] == 1
+
+    code, out = _run(capsys, "placements", "list", "--json")
+    listed = json.loads(out)
+    assert code == 0
+    assert listed[0]["experience_id"] == "E-0001"
+    assert listed[0]["recommended_type"] in {
+        "ignore", "global_rule", "project_rule", "scoped_rule", "skill",
+    }
+
+    code, out = _run(capsys, "placements", "show", "E-0001", "--json")
+    shown = json.loads(out)
+    assert code == 0
+    assert [item["rank"] for item in shown["proposals"]] == [1, 2, 3, 4, 5]
+    assert {item["placement_type"] for item in shown["proposals"]} == {
+        "ignore", "global_rule", "project_rule", "scoped_rule", "skill",
+    }
+    # The read contract de-duplicates shared evidence at the set level; the
+    # storage contract keeps an explicit link from every proposal to it.
+    assert len(shown["evidence"]) == 3
+
+    assert _run(capsys, "experiences", "review", "E-0001", "--status", "false_positive")[0] == 0
+    code, out = _run(capsys, "placements", "generate", "--json")
+    assert code == 0
+    assert json.loads(out)["eligible_experiences"] == 0
+
+
+def test_placements_zero_candidate_database_is_a_success(tw_home, capsys):
+    code, out = _run(capsys, "--home", str(tw_home), "placements", "generate", "--json")
+    assert code == 0
+    assert json.loads(out)["eligible_experiences"] == 0
+    assert json.loads(_run(capsys, "--home", str(tw_home), "placements", "generate", "--json")[1])["proposal_sets"] == 0
