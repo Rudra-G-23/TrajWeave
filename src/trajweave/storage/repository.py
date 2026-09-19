@@ -1297,6 +1297,378 @@ class Repository:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Stage 8 - evaluation ledger
+    # ------------------------------------------------------------------
+    def create_evaluation_spec(self, spec: dict[str, Any]) -> None:
+        now = spec.get("created_at") or _now()
+        self.db.execute(
+            "INSERT INTO evaluation_specs("
+            "id, review_id, experience_id, proposal_id, content_revision, policy_content, "
+            "policy_content_hash, placement_type, target_agent, target_override, scope_type, "
+            "scope_value, repo_root, repo_commit, task_spec_json, agent_name, agent_version, "
+            "model_name, model_version, reasoning_config_json, agent_config_json, "
+            "agent_command_json, environment_json, verifier_json, execution_limits_json, "
+            "condition_order_mode, seed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                spec["id"], spec["review_id"], spec["experience_id"], spec["proposal_id"],
+                spec["content_revision"], spec["policy_content"], spec["policy_content_hash"],
+                spec["placement_type"], spec["target_agent"], spec.get("target_override"),
+                spec.get("scope_type"), spec.get("scope_value"), spec["repo_root"], spec["repo_commit"],
+                _json(spec["task_spec"]), spec.get("agent_name"), spec.get("agent_version"),
+                spec.get("model_name"), spec.get("model_version"), _json(spec.get("reasoning_config")),
+                _json(spec.get("agent_config")), _json(spec.get("agent_command")),
+                _json(spec["environment"]), _json(spec["verifiers"]), _json(spec.get("execution_limits")),
+                spec["condition_order_mode"], spec.get("seed"), now,
+            ),
+        )
+
+    def get_evaluation_spec(self, evaluation_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM evaluation_specs WHERE id = ?", (evaluation_id,))
+
+    def list_evaluation_specs(self) -> list[Any]:
+        return self.db.query(
+            "SELECT es.*, "
+            "(SELECT COUNT(*) FROM evaluation_runs r WHERE r.evaluation_id = es.id AND r.condition = 'baseline') AS repetitions, "
+            "(SELECT MAX(ec.created_at) FROM evaluation_comparisons ec WHERE ec.evaluation_id = es.id) AS last_compared_at "
+            "FROM evaluation_specs es ORDER BY es.created_at DESC"
+        )
+
+    def next_evaluation_repetition(self, evaluation_id: str) -> int:
+        row = self.db.query_one(
+            "SELECT COALESCE(MAX(repetition_index), 0) AS v FROM evaluation_runs WHERE evaluation_id = ?",
+            (evaluation_id,),
+        )
+        return int(row["v"]) + 1
+
+    def record_evaluation_run(self, run: dict[str, Any]) -> None:
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO evaluation_runs("
+                "id, evaluation_id, repetition_index, condition, order_position, status, error_reason, "
+                "started_at, ended_at, duration_ms, apply_outcome, agent_exit_code, agent_timed_out, "
+                "agent_stdout_excerpt, agent_stderr_excerpt, metrics_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run["id"], run["evaluation_id"], run["repetition_index"], run["condition"],
+                    run["order_position"], run["status"], run.get("error_reason"),
+                    run["started_at"], run.get("ended_at"), run.get("duration_ms"),
+                    run.get("apply_outcome"), run.get("agent_exit_code"),
+                    int(bool(run.get("agent_timed_out"))), run.get("agent_stdout_excerpt"),
+                    run.get("agent_stderr_excerpt"), _json(run.get("metrics") or {}), now,
+                ),
+            )
+            for result in run.get("verifier_results") or []:
+                self.db.execute(
+                    "INSERT INTO evaluation_verifier_results("
+                    "run_id, checker_name, command_json, exit_code, passed, timed_out, duration_ms, "
+                    "stdout_excerpt, stderr_excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run["id"], result["name"], _json(result["command"]), result.get("exit_code"),
+                        int(bool(result["passed"])), int(bool(result.get("timed_out"))),
+                        result.get("duration_ms"), result.get("stdout_excerpt"),
+                        result.get("stderr_excerpt"), now,
+                    ),
+                )
+
+    def get_evaluation_run(self, run_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM evaluation_runs WHERE id = ?", (run_id,))
+
+    def list_evaluation_runs(self, evaluation_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_runs WHERE evaluation_id = ? "
+            "ORDER BY repetition_index, order_position", (evaluation_id,)
+        )
+
+    def list_verifier_results(self, run_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_verifier_results WHERE run_id = ? ORDER BY id", (run_id,)
+        )
+
+    def record_evaluation_comparison(self, comparison: dict[str, Any]) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO evaluation_comparisons("
+                "id, evaluation_id, repetition_index, baseline_run_id, candidate_run_id, outcome, "
+                "invalid_reason, task_success_delta, regression_count, regression_details_json, "
+                "changed_checks_json, metrics_delta_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    comparison["id"], comparison["evaluation_id"], comparison["repetition_index"],
+                    comparison.get("baseline_run_id"), comparison.get("candidate_run_id"),
+                    comparison["outcome"], comparison.get("invalid_reason"),
+                    comparison.get("task_success_delta"), comparison.get("regression_count", 0),
+                    _json(comparison.get("regression_details") or []),
+                    _json(comparison.get("changed_checks") or []),
+                    _json(comparison.get("metrics_delta") or {}), _now(),
+                ),
+            )
+
+    def list_evaluation_comparisons(self, evaluation_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM evaluation_comparisons WHERE evaluation_id = ? ORDER BY repetition_index",
+            (evaluation_id,),
+        )
+
+    def evaluation_history(self, evaluation_id: str) -> dict[str, Any] | None:
+        spec = self.get_evaluation_spec(evaluation_id)
+        if spec is None:
+            return None
+        runs = [dict(r) for r in self.list_evaluation_runs(evaluation_id)]
+        for run in runs:
+            run["verifier_results"] = [dict(v) for v in self.list_verifier_results(run["id"])]
+        comparisons = [dict(c) for c in self.list_evaluation_comparisons(evaluation_id)]
+        return {"spec": dict(spec), "runs": runs, "comparisons": comparisons}
+
+
+    # ------------------------------------------------------------------
+    # Stage 9 - policy lifecycle
+    # ------------------------------------------------------------------
+    def create_policy(
+        self, policy_id: str, *, origin_review_id: str | None, origin_experience_id: str | None,
+    ) -> bool:
+        """Insert a new logical policy identity. Idempotent by id."""
+
+        if self.get_policy(policy_id) is not None:
+            return False
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO policies(id, status, current_version_id, origin_review_id, "
+                "origin_experience_id, created_at, updated_at) VALUES (?, 'active', NULL, ?, ?, ?, ?)",
+                (policy_id, origin_review_id, origin_experience_id, now, now),
+            )
+        return True
+
+    def get_policy(self, policy_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policies WHERE id = ?", (policy_id,))
+
+    def get_policy_by_origin_review(self, review_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policies WHERE origin_review_id = ?", (review_id,))
+
+    def list_policies(self, *, status: str | None = None) -> list[Any]:
+        where = "WHERE p.status = ?" if status else ""
+        params = (status,) if status else ()
+        return self.db.query(
+            "SELECT p.*, v.version_number AS current_version_number, v.placement_type AS current_placement_type, "
+            "       v.scope_type AS current_scope_type, v.scope_value AS current_scope_value, "
+            "       v.content_hash AS current_content_hash, v.status AS current_version_status "
+            "FROM policies p LEFT JOIN policy_versions v ON v.id = p.current_version_id "
+            f"{where} ORDER BY p.updated_at DESC",
+            params,
+        )
+
+    def set_policy_status(self, policy_id: str, status: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policies SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), policy_id)
+            )
+
+    def set_policy_current_version(self, policy_id: str, version_id: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policies SET current_version_id = ?, updated_at = ? WHERE id = ?",
+                (version_id, _now(), policy_id),
+            )
+
+    def next_policy_version_number(self, policy_id: str) -> int:
+        row = self.db.query_one(
+            "SELECT COALESCE(MAX(version_number), 0) AS v FROM policy_versions WHERE policy_id = ?",
+            (policy_id,),
+        )
+        return int(row["v"]) + 1
+
+    def create_policy_version(self, version: dict[str, Any]) -> None:
+        self.db.execute(
+            "INSERT INTO policy_versions("
+            "id, policy_id, version_number, content, content_hash, placement_type, target_agent, "
+            "target_override, scope_type, scope_value, status, created_via, created_from_version_id, "
+            "created_from_review_id, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                version["id"], version["policy_id"], version["version_number"], version["content"],
+                version["content_hash"], version["placement_type"], version.get("target_agent"),
+                version.get("target_override"), version.get("scope_type"), version.get("scope_value"),
+                version.get("status", "active"), version["created_via"], version.get("created_from_version_id"),
+                version.get("created_from_review_id"), version.get("reason"), version.get("created_at") or _now(),
+            ),
+        )
+
+    def get_policy_version(self, version_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policy_versions WHERE id = ?", (version_id,))
+
+    def list_policy_versions(self, policy_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_versions WHERE policy_id = ? ORDER BY version_number", (policy_id,)
+        )
+
+    def set_policy_version_status(self, version_id: str, status: str) -> None:
+        with self.db.transaction():
+            self.db.execute("UPDATE policy_versions SET status = ? WHERE id = ?", (status, version_id))
+
+    def record_lineage(self, *, relation: str, from_version_id: str, to_version_id: str) -> None:
+        self.db.execute(
+            "INSERT INTO policy_lineage(relation, from_version_id, to_version_id, created_at) VALUES (?, ?, ?, ?)",
+            (relation, from_version_id, to_version_id, _now()),
+        )
+
+    def lineage_from(self, version_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_lineage WHERE from_version_id = ? ORDER BY id", (version_id,)
+        )
+
+    def lineage_to(self, version_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_lineage WHERE to_version_id = ? ORDER BY id", (version_id,)
+        )
+
+    def record_lifecycle_action(
+        self, *, policy_id: str, version_id: str | None, action: str,
+        from_status: str | None, to_status: str | None,
+        recommendation_id: str | None = None, payload: dict[str, Any] | None = None,
+    ) -> int:
+        cur = self.db.execute(
+            "INSERT INTO policy_lifecycle_actions(policy_id, version_id, action, from_status, to_status, "
+            "recommendation_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (policy_id, version_id, action, from_status, to_status, recommendation_id, _json(payload or {}), _now()),
+        )
+        return int(cur.lastrowid)
+
+    def list_lifecycle_actions(self, policy_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_lifecycle_actions WHERE policy_id = ? ORDER BY id", (policy_id,)
+        )
+
+    def list_lifecycle_actions_for_version(self, version_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_lifecycle_actions WHERE version_id = ? ORDER BY id", (version_id,)
+        )
+
+    def upsert_recommendation(self, rec: dict[str, Any]) -> str:
+        """Insert a recommendation if this exact id (a deterministic hash of
+        policy/version/operation/evidence) does not already exist. Returns the id."""
+
+        existing = self.get_recommendation(rec["id"])
+        if existing is not None:
+            return str(existing["id"])
+        now = _now()
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_recommendations SET status = 'superseded', updated_at = ? "
+                "WHERE policy_id = ? AND version_id = ? AND status = 'open'",
+                (now, rec["policy_id"], rec["version_id"]),
+            )
+            self.db.execute(
+                "INSERT INTO policy_recommendations("
+                "id, policy_id, version_id, operation, reason_codes_json, explanation, evidence_json, "
+                "counter_evidence_json, strength, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+                (
+                    rec["id"], rec["policy_id"], rec["version_id"], rec["operation"],
+                    _json(rec.get("reason_codes") or []), rec["explanation"], _json(rec.get("evidence") or {}),
+                    _json(rec.get("counter_evidence") or []), rec.get("strength", "informational"), now, now,
+                ),
+            )
+        return str(rec["id"])
+
+    def get_recommendation(self, recommendation_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policy_recommendations WHERE id = ?", (recommendation_id,))
+
+    def list_recommendations(self, policy_id: str, *, status: str | None = None) -> list[Any]:
+        where = "AND status = ?" if status else ""
+        params = (policy_id, status) if status else (policy_id,)
+        return self.db.query(
+            f"SELECT * FROM policy_recommendations WHERE policy_id = ? {where} ORDER BY created_at DESC", params
+        )
+
+    def update_recommendation_status(self, recommendation_id: str, status: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_recommendations SET status = ?, updated_at = ? WHERE id = ?",
+                (status, _now(), recommendation_id),
+            )
+
+    def link_version_evidence(self, version_id: str, comparison_id: str) -> None:
+        self.db.execute(
+            "INSERT OR IGNORE INTO policy_version_evidence(policy_version_id, evaluation_comparison_id, linked_at) "
+            "VALUES (?, ?, ?)",
+            (version_id, comparison_id, _now()),
+        )
+
+    def list_version_evidence(self, version_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT ec.* FROM policy_version_evidence pve "
+            "JOIN evaluation_comparisons ec ON ec.id = pve.evaluation_comparison_id "
+            "WHERE pve.policy_version_id = ? ORDER BY ec.created_at",
+            (version_id,),
+        )
+
+    def comparisons_for_review(self, review_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT ec.* FROM evaluation_comparisons ec "
+            "JOIN evaluation_specs es ON es.id = ec.evaluation_id "
+            "WHERE es.review_id = ? ORDER BY ec.created_at",
+            (review_id,),
+        )
+
+    def record_lifecycle_preview(self, policy_id: str, version_id: str, preview: dict[str, Any]) -> str:
+        preview_id = f"LPV-{version_id}-{preview['output_hash'][:12]}"
+        self.db.execute(
+            "INSERT OR REPLACE INTO policy_lifecycle_previews("
+            "id, policy_id, version_id, target_path, target_hash, output_hash, proposed_content, "
+            "unified_diff, target_kind, created_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            (
+                preview_id, policy_id, version_id, preview["target_path"], preview.get("target_hash"),
+                preview["output_hash"], preview["proposed_content"], preview["unified_diff"],
+                preview["target_kind"], _now(),
+            ),
+        )
+        return preview_id
+
+    def get_lifecycle_preview(self, preview_id: str) -> Any:
+        return self.db.query_one("SELECT * FROM policy_lifecycle_previews WHERE id = ?", (preview_id,))
+
+    def latest_lifecycle_preview(self, version_id: str) -> Any:
+        return self.db.query_one(
+            "SELECT * FROM policy_lifecycle_previews WHERE version_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (version_id,),
+        )
+
+    def consume_lifecycle_preview(self, preview_id: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE policy_lifecycle_previews SET consumed_at = ? WHERE id = ?", (_now(), preview_id)
+            )
+
+    def record_lifecycle_application(self, policy_id: str, version_id: str, result: dict[str, Any]) -> int:
+        cur = self.db.execute(
+            "INSERT INTO policy_lifecycle_applications(policy_id, version_id, preview_id, outcome, target_path, "
+            "before_hash, after_hash, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                policy_id, version_id, result.get("preview_id"), result["outcome"], result.get("target_path"),
+                result.get("before_hash"), result.get("after_hash"), result.get("detail"), _now(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def list_lifecycle_applications(self, policy_id: str) -> list[Any]:
+        return self.db.query(
+            "SELECT * FROM policy_lifecycle_applications WHERE policy_id = ? ORDER BY id", (policy_id,)
+        )
+
+    def lifecycle_history(self, policy_id: str) -> dict[str, list[Any]]:
+        return {
+            "versions": self.list_policy_versions(policy_id),
+            "actions": self.list_lifecycle_actions(policy_id),
+            "recommendations": self.list_recommendations(policy_id),
+            "previews": self.db.query(
+                "SELECT * FROM policy_lifecycle_previews WHERE policy_id = ? ORDER BY created_at, id", (policy_id,)
+            ),
+            "applications": self.list_lifecycle_applications(policy_id),
+        }
+
 
 def rows_to_dicts(rows: Iterable[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]

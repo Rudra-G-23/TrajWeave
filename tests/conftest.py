@@ -49,6 +49,102 @@ def git_repo(tmp_path) -> Path:
 
 
 @pytest.fixture
+def eval_repo(tmp_path) -> Path:
+    """A toy repository for Stage 8: a bug (missing fix.txt), a legacy file that
+    a careless fix could delete (regression bait), and no AGENTS.md/CLAUDE.md.
+    """
+
+    root = tmp_path / "eval-repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "app.py").write_text("print('hi')\n")
+    (root / "legacy.txt").write_text("legacy\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "initial")
+    return root
+
+
+_FAKE_AGENT_SCRIPT = """\
+import pathlib
+root = pathlib.Path(".")
+managed = any(
+    (root / name).exists() and "trajweave:managed" in (root / name).read_text("utf-8")
+    for name in ("AGENTS.md", "CLAUDE.md")
+)
+if managed:
+    (root / "fix.txt").write_text("fixed")
+    legacy = root / "legacy.txt"
+    if legacy.exists():
+        legacy.unlink()
+"""
+
+_VERIFY_TASK_SCRIPT = """\
+import pathlib, sys
+p = pathlib.Path("fix.txt")
+sys.exit(0 if p.exists() and p.read_text() == "fixed" else 1)
+"""
+
+_VERIFY_REGRESSION_SCRIPT = """\
+import pathlib, sys
+sys.exit(0 if pathlib.Path("legacy.txt").exists() else 1)
+"""
+
+_ALWAYS_PASS_SCRIPT = "import sys\nsys.exit(0)\n"
+_ALWAYS_FAIL_SCRIPT = "import sys\nsys.exit(1)\n"
+
+# A deliberately worse "agent": once it can see the candidate's managed
+# policy block, it deletes app.py outright - used to prove a candidate can
+# make things strictly worse (Scenario 4: regression).
+_REGRESSOR_AGENT_SCRIPT = """\
+import pathlib
+root = pathlib.Path(".")
+managed = any(
+    (root / name).exists() and "trajweave:managed" in (root / name).read_text("utf-8")
+    for name in ("AGENTS.md", "CLAUDE.md")
+)
+if managed:
+    app = root / "app.py"
+    if app.exists():
+        app.unlink()
+"""
+
+_VERIFY_APP_EXISTS_SCRIPT = """\
+import pathlib, sys
+sys.exit(0 if pathlib.Path("app.py").exists() else 1)
+"""
+
+
+@pytest.fixture
+def eval_scripts(tmp_path) -> dict[str, Path]:
+    """Deterministic, no-network stand-ins for a coding agent and its
+    verifiers: the "agent" only writes ``fix.txt`` (and, as an intentional
+    regression, deletes ``legacy.txt``) when it can see the candidate's
+    managed policy block in AGENTS.md/CLAUDE.md - so baseline vs. candidate
+    outcomes are driven by the real Stage 7 apply path, not a hardcoded
+    condition name.
+    """
+
+    scripts_dir = tmp_path / "eval-scripts"
+    scripts_dir.mkdir()
+    paths = {}
+    for name, content in (
+        ("agent", _FAKE_AGENT_SCRIPT),
+        ("verify_task", _VERIFY_TASK_SCRIPT),
+        ("verify_regression", _VERIFY_REGRESSION_SCRIPT),
+        ("always_pass", _ALWAYS_PASS_SCRIPT),
+        ("always_fail", _ALWAYS_FAIL_SCRIPT),
+        ("regressor_agent", _REGRESSOR_AGENT_SCRIPT),
+        ("verify_app_exists", _VERIFY_APP_EXISTS_SCRIPT),
+    ):
+        path = scripts_dir / f"{name}.py"
+        path.write_text(content)
+        paths[name] = path
+    return paths
+
+
+@pytest.fixture
 def other_git_repo(tmp_path) -> Path:
     root = tmp_path / "repo-b"
     root.mkdir()

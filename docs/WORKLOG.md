@@ -314,3 +314,16 @@ Implemented on `feat/stage7` from `7d3aa02`.
 - Added CLI and loopback UI review controls with Apply visually separate from Accept.
 - Added temporary repository and adversarial fixtures.
 - Stage 7 does not implement Stage 8 evaluation or future adapter/platform roadmap items.
+
+# Stage 8 - Evaluation
+
+Implemented on `feat/stage8` from `a364409`.
+
+- Added schema v6 for frozen evaluation specs, append-only baseline/candidate runs, per-check verifier results, and paired comparisons.
+- Added isolated baseline/candidate workspaces via `git clone --local` (never `git worktree`, never the developer's active repo).
+- Reused Stage 7's exact `resolve_target`/`build_preview`/`apply_preview` safe writer for candidate application - no second file-writing path.
+- Added deterministic, no-network verifier/agent-command execution with timeouts and output caps; a pure `compare_runs` decision table (`improved | unchanged | regressed | invalid | incomparable`) that never hides a regression behind its label.
+- Added `trajweave eval list | show | run | compare` and a read-only "Evaluations" UI section; no Stage 9 lifecycle controls.
+- Added controlled toy-repo fixtures with a scripted fake agent/verifier proving all 12 required scenarios plus adversarial cases (deleted repo mid-flight, stale review, frozen-spec rerun rejection, subprocess timeout/output caps). Full suite: 290 passed.
+- Real database validated: migrated from schema v5 to v6 with zero data loss; `trajweave eval list` returns a clean empty result.
+- Stage 8 does not implement Stage 9 lifecycle logic or Stage 10 benchmarking.

@@ -180,6 +180,12 @@ async function render() {
     } else if (path.startsWith("/review/")) {
       navSetActive("reviews");
       await viewReview(view, decodeURIComponent(path.slice("/review/".length)));
+    } else if (path === "/evals") {
+      navSetActive("evals");
+      await viewEvals(view);
+    } else if (path.startsWith("/eval/")) {
+      navSetActive("evals");
+      await viewEval(view, decodeURIComponent(path.slice("/eval/".length)));
     } else if (path === "/debug") {
       navSetActive(null);
       await viewDebug(view, params);
@@ -1113,6 +1119,147 @@ async function viewReview(view, id) {
       reviewActionButton("Test first", "test-first", id, reload), editButton),
     el("h2", { text: "Exact target and diff" }), el("div", { class: "review-actions" }, previewButton, dryRunButton, applyButton), statusLine, diffBox,
     el("h2", { text: "Evidence and history" }), el("p", { class: "muted", text: `${(data.evidence || []).length} linked occurrence(s); ${(data.history && data.history.actions || []).length} recorded action(s).` }));
+  view.replaceChildren(...parts);
+}
+
+/* ---------- Stage 8 evaluations (read-only) ---------------- */
+function evalOutcomePill(outcome) {
+  const cls = { improved: "success", regressed: "failure", unchanged: "partial" }[outcome] || "unknown";
+  return el("span", { class: `pill st-${cls}`, text: (outcome || "unknown").toUpperCase() });
+}
+
+async function viewEvals(view) {
+  const data = await api("/api/evals");
+  const rows = data.evaluations || [];
+  const parts = [
+    el("div", { class: "page-head" }, el("h1", { text: "Evaluations" })),
+    el(
+      "p",
+      { class: "muted" },
+      "Baseline vs. reviewed-candidate comparisons for a frozen coding task. Read-only - run and manage evaluations with ",
+      el("code", { text: "trajweave eval run" }),
+      "."
+    ),
+  ];
+  if (!rows.length) {
+    parts.push(
+      el(
+        "div",
+        { class: "empty" },
+        el("p", { text: "No evaluations yet." }),
+        el("p", {}, "Run ", el("code", { text: "trajweave eval run <review-id>" }), " after reviewing a proposal.")
+      )
+    );
+    view.replaceChildren(...parts);
+    return;
+  }
+  const tbody = el("tbody");
+  rows.forEach((row) =>
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { class: "id-cell" }, el("a", { href: `#/eval/${encodeURIComponent(row.id)}`, text: row.id })),
+        el("td", { class: "mono", text: row.review_id }),
+        el("td", { text: placementLabel(row.placement_type) }),
+        el("td", { text: row.target_agent }),
+        el("td", { text: String(row.repetitions || 0) }),
+        el("td", { class: "mono", text: (row.repo_commit || "").slice(0, 10) }),
+        el("td", { text: fmtDate(row.created_at) })
+      )
+    )
+  );
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el(
+        "thead",
+        {},
+        el("tr", {}, ...["Evaluation", "Review", "Placement", "Agent", "Reps", "Commit", "Created"].map((h) => el("th", { text: h })))
+      ),
+      tbody
+    )
+  );
+  view.replaceChildren(...parts);
+}
+
+async function viewEval(view, id) {
+  const data = await api("/api/evals/" + encodeURIComponent(id));
+  const spec = data.spec || {};
+  const runsByRep = new Map();
+  (data.runs || []).forEach((run) => {
+    const list = runsByRep.get(run.repetition_index) || [];
+    list.push(run);
+    runsByRep.set(run.repetition_index, list);
+  });
+  const parts = [
+    el("p", { class: "crumbs" }, el("a", { href: "#/evals" }, "Evaluations"), " / ", id),
+    el(
+      "div",
+      { class: "detail-head" },
+      el("div", {}, el("span", { class: "id-cell mono", text: spec.id })),
+      el("div", { class: "dh-title", text: `review ${spec.review_id} - ${placementLabel(spec.placement_type)} - ${spec.target_agent}` }),
+      el("p", { class: "muted", text: `${spec.repo_root} @ ${(spec.repo_commit || "").slice(0, 12)}` })
+    ),
+    el("h2", { text: "Comparisons" }),
+  ];
+  const compBody = el("tbody");
+  (data.comparisons || []).forEach((c) => {
+    compBody.append(
+      el(
+        "tr",
+        {},
+        el("td", { text: String(c.repetition_index) }),
+        el("td", {}, evalOutcomePill(c.outcome)),
+        el("td", { class: "mono", text: c.task_success_delta || "-" }),
+        el("td", { text: String(c.regression_count || 0) }),
+        el("td", { class: "task", text: c.invalid_reason || "-" })
+      )
+    );
+  });
+  parts.push(
+    el(
+      "table",
+      { class: "tbl" },
+      el("thead", {}, el("tr", {}, ...["Rep", "Outcome", "Task delta", "Regressions", "Invalid reason"].map((h) => el("th", { text: h })))),
+      compBody
+    )
+  );
+
+  parts.push(el("h2", { text: "Runs" }));
+  for (const [rep, runs] of [...runsByRep.entries()].sort((a, b) => a[0] - b[0])) {
+    parts.push(el("h3", { text: `Repetition ${rep}` }));
+    for (const run of runs.sort((a, b) => a.order_position - b.order_position)) {
+      const checks = el("ul", { class: "eval-checks" });
+      (run.verifier_results || []).forEach((v) =>
+        checks.append(
+          el(
+            "li",
+            {},
+            el("span", { class: "pill st-" + (v.passed ? "success" : "failure"), text: v.passed ? "PASS" : "FAIL" }),
+            " ",
+            v.checker_name
+          )
+        )
+      );
+      parts.push(
+        el(
+          "div",
+          { class: "eval-run" },
+          el(
+            "p",
+            {},
+            el("strong", { text: run.condition }),
+            ` - ${run.status} - ${run.duration_ms == null ? "-" : run.duration_ms + "ms"}`,
+            run.apply_outcome ? ` - apply: ${run.apply_outcome}` : ""
+          ),
+          run.error_reason ? el("p", { class: "muted", text: run.error_reason }) : null,
+          checks
+        )
+      );
+    }
+  }
   view.replaceChildren(...parts);
 }
 
