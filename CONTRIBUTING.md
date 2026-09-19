@@ -76,6 +76,15 @@ Branch name prefixes follow the commit convention below (`feat/`, `fix/`,
 
 Everything CI enforces, you can run locally.
 
+Install the Git hooks once after `uv sync --extra dev`:
+
+```bash
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+The pre-commit hook runs Ruff before every commit. The pre-push hook runs the
+complete test suite before every push; a failing check stops the Git operation.
+
 ```bash
 # uv: full test suite (unit + integration)
 uv run pytest

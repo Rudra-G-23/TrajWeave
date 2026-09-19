@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run --no-sync ruff check .
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: pytest
+        name: pytest
+        entry: uv run --no-sync python -m pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
