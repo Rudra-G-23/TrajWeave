@@ -47,5 +47,6 @@ Call out any of the following, or write "none":
 - [ ] `uv run pytest` passes locally.
 - [ ] `uv run ruff check .` passes locally.
 - [ ] `README.md` / `docs/` updated if behavior changed.
+- [ ] `pyproject.toml` version and `CHANGELOG.md` updated for a release PR.
 - [ ] No secrets, credentials, or real transcript data are included.
 - [ ] Backward compatibility (CLI, schema, persisted data) was considered and is noted above.
