@@ -7,11 +7,10 @@ Git repository each one belongs to, and - **only for repositories you have
 explicitly opted in** - parses the agent-specific transcript into a common
 normalized schema and stores it in a local SQLite database.
 
-This repository implements **Stage 0-3 only**: the data layer. There is no
-learning engine, no skill/rule generation, no modification of `AGENTS.md` /
-`CLAUDE.md`, no evaluation engine, and no cloud/SaaS. The goal is a
-trustworthy, privacy-conscious, agent-independent trajectory dataset that a
-later research algorithm can rely on.
+This repository implements the local trajectory, experience, deterministic
+placement, and human review layers. Stage 7 can render an explicitly accepted
+review into a safe managed policy block, but Accept never applies a file and
+Stage 8 evaluation is not included.
 
 ---
 
@@ -26,9 +25,11 @@ later research algorithm can rely on.
   transcript.
 - **Local only.** Everything is written under `~/.trajweave/` (override with
   `TRAJWEAVE_HOME`). Nothing is sent anywhere.
-- **The only repo-side change** is a small opt-in marker:
-  `<repo>/.trajweave/project.json`. TrajWeave never touches your source,
-  `AGENTS.md`, `CLAUDE.md`, or Git history.
+- **Repository policy is protected by default.** Registration writes only the
+  small opt-in marker `<repo>/.trajweave/project.json`. Stage 7 can update one
+  explicitly selected managed block in `AGENTS.md`, `CLAUDE.md`, or a Skill
+  only after Accept, Preview, and explicit Apply. It never regenerates an
+  entire policy file or touches Git history.
 - **Basic secret redaction.** Obvious credentials (API keys, tokens, private
   keys, `Bearer` headers, `KEY=value` secrets, credentials in URLs) are
   replaced with `[REDACTED:...]` before anything is stored, and the affected
@@ -83,8 +84,16 @@ re-parsed and its trajectory is replaced **in place** (its `TW-` id is kept).
 | `trajweave sessions [--agent ...] [--status ...] [--json]` | List every discovered source session and its import status. |
 | `trajweave trajectories [--agent ...] [--project PATH] [--limit N] [--json]` | List stored trajectories. |
 | `trajweave show TW-000123 [--events N] [--json]` | Inspect one trajectory: task, status, files changed, event trace. |
+| `trajweave review list/show/...` | Review Stage 6 proposals without applying them. |
+| `trajweave apply ID --dry-run` | Preview the exact target and unified diff. |
+| `trajweave apply ID` | Explicitly apply the accepted preview. |
 
 Global flags: `--home DIR`, `-v/--verbose`, `-q/--quiet`, `--version`.
+
+Stage 7 policy writes are local and fail closed. Existing human content is
+preserved, previews bind to a target hash, repeated Apply is idempotent, and
+targets must remain inside the registered repository or the approved global
+TrajWeave policy directory.
 
 ---
 
@@ -100,6 +109,9 @@ SQLite database at `~/.trajweave/trajweave.db` (schema is versioned via a
 | `trajectories` | `TW-000001`-style id, agent, task + `task_source`, start/end, `final_status` + reason, repository name/root, git branch/commit/remote, model, CLI version, token usage, event count. One per source session. |
 | `trajectory_events` | ordered normalized events: `sequence`, `type`, timestamp, `path`, `command`, `exit_code`, `tool_name`, `summary`, `metadata` (JSON), `redacted`. |
 | `trajectory_files` | per-trajectory file touch summary: relative `path` + `was_read/created/modified/deleted` flags. |
+| `experiences`, `experience_occurrences`, `experience_evidence` | Stage 5 evidence-backed candidate patterns and their trajectory intervals. |
+| `placement_proposal_sets`, `placement_proposals` | Stage 6 deterministic alternatives, diagnostics, feature snapshots, and occurrence links. |
+| `policy_reviews`, `policy_review_variants`, `policy_review_actions`, `policy_review_previews`, `policy_applications` | Stage 7 review decisions, edited variants, exact diffs, apply history, and outcomes. |
 
 ### Normalized event taxonomy
 

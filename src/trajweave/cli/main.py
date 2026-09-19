@@ -1,6 +1,6 @@
 """``trajweave`` command-line entry point.
 
-Stage 0-3 surface only:
+Current command surface:
 
     trajweave init [PATH]        - opt a repository in
     trajweave projects           - list registered repositories
@@ -8,6 +8,8 @@ Stage 0-3 surface only:
     trajweave sessions           - list discovered source sessions
     trajweave trajectories       - list stored trajectories
     trajweave show TW-000001     - inspect one trajectory
+    trajweave review list        - review Stage 6 proposals
+    trajweave apply <id>         - explicitly apply an accepted preview
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ log = get_logger("cli")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trajweave",
-        description="Local-first coding-agent trajectory data substrate (Stage 0-3).",
+        description="Local-first coding-agent trajectory learning substrate.",
     )
     parser.add_argument("--version", action="version", version=f"trajweave {__version__}")
     parser.add_argument(
@@ -161,7 +163,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_placements.set_defaults(func=lambda _a: (p_placements.print_help() or 0))
 
-    p_ui = sub.add_parser("ui", help="launch the local, read-only trajectory explorer")
+    p_review = sub.add_parser("review", help="review Stage 6 proposals without applying them")
+    review_sub = p_review.add_subparsers(dest="review_command", metavar="<subcommand>")
+    rv_list = review_sub.add_parser("list", help="list reviewable proposals and review state")
+    rv_list.add_argument("--status", choices=["unreviewed", "accepted", "rejected", "deferred", "test_first", "applied", "stale"])
+    rv_list.add_argument("--json", action="store_true")
+    rv_list.set_defaults(func=cmd_review_list)
+    rv_show = review_sub.add_parser("show", help="show review, alternatives, evidence, and history")
+    rv_show.add_argument("review_id")
+    rv_show.add_argument("--json", action="store_true")
+    rv_show.set_defaults(func=cmd_review_show)
+    rv_accept = review_sub.add_parser("accept", help="approve an exact proposal for later Apply")
+    rv_accept.add_argument("review_id")
+    rv_accept.add_argument("--agent", choices=["codex", "claude"])
+    rv_accept.add_argument("--target")
+    rv_accept.set_defaults(func=cmd_review_accept)
+    for name, handler, help_text in (
+        ("reject", cmd_review_reject, "reject a proposal"),
+        ("defer", cmd_review_defer, "defer a proposal and keep collecting evidence"),
+        ("test-first", cmd_review_test_first, "handoff a reviewed proposal to Stage 8"),
+    ):
+        command = review_sub.add_parser(name, help=help_text)
+        command.add_argument("review_id")
+        command.set_defaults(func=handler)
+    rv_edit = review_sub.add_parser("edit", help="store an edited proposal variant")
+    rv_edit.add_argument("review_id")
+    content = rv_edit.add_mutually_exclusive_group(required=True)
+    content.add_argument("--content")
+    content.add_argument("--file")
+    rv_edit.set_defaults(func=cmd_review_edit)
+    rv_choose = review_sub.add_parser("choose", help="choose another Stage 6 placement alternative")
+    rv_choose.add_argument("review_id")
+    rv_choose.add_argument("--placement", required=True,
+                           choices=["ignore", "global_rule", "project_rule", "scoped_rule", "skill"])
+    rv_choose.set_defaults(func=cmd_review_choose)
+    p_review.set_defaults(func=lambda _a: (p_review.print_help() or 0))
+
+    p_apply = sub.add_parser("apply", help="preview or explicitly apply an accepted review")
+    p_apply.add_argument("review_id")
+    p_apply.add_argument("--dry-run", action="store_true", help="show the exact diff without writing")
+    p_apply.set_defaults(func=cmd_apply)
+
+    p_ui = sub.add_parser("ui", help="launch the local trajectory and review explorer")
     p_ui.add_argument(
         "--port", type=int, default=None,
         help="port to bind on 127.0.0.1 (default: 8765, auto-advances if taken)",
@@ -587,6 +630,147 @@ def cmd_placements_show(args: argparse.Namespace) -> int:
                 f"{item.get('relationship', '-'):<13}  "
                 f"seq {item.get('start_sequence', '-')}-{item.get('end_sequence', '-')}"
             )
+    return 0
+
+
+def _review_service(args: argparse.Namespace):
+    from trajweave.review.service import ReviewService
+
+    paths = get_paths(args.home).ensure()
+    db = _open_db(args)
+    return db, ReviewService(Repository(db), paths)
+
+
+def _review_payload(service, value: str) -> dict:
+    return service.history(value)
+
+
+def cmd_review_list(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        rows = service.list(status=args.status)
+    finally:
+        db.close()
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No reviewable proposals. Run 'trajweave placements generate'.")
+        return 0
+    print(f"{'REVIEW':<22}  {'STATUS':<12}  {'RECOMMENDED':<14}  {'SCORE':>5}  TITLE")
+    for row in rows:
+        print(f"{row['review_id']:<22}  {row.get('review_status', 'unreviewed'):<12}  "
+              f"{row.get('recommended_type', '-'):<14}  {float(row.get('recommended_score') or 0):>5.2f}  "
+              f"{(row.get('experience_title') or '')[:60]}")
+    return 0
+
+
+def _print_review(payload: dict) -> None:
+    review = payload.get("review") or {}
+    proposal = payload.get("proposal") or {}
+    exp = payload.get("experience") or {}
+    print(f"{review.get('id') or 'unreviewed'}  {exp.get('id')}  {exp.get('title') or '(untitled)'}")
+    print(f"  status       : {review.get('computed_status') or review.get('status') or 'unreviewed'}")
+    print(f"  proposal     : {proposal.get('id')}  {proposal.get('placement_type')}  rank {proposal.get('rank')}")
+    print(f"  scope        : {_placement_scope(proposal)}")
+    print(f"  content      : {proposal.get('effective_content') or '-'}")
+    print(f"  alternatives : {len(payload.get('alternatives') or [])}")
+    print(f"  evidence     : {len(payload.get('evidence') or [])}")
+    if review:
+        print(f"  target       : {review.get('target_path') or '(not selected)'}")
+        print(f"  history      : {len((payload.get('history') or {}).get('actions') or [])} actions")
+
+
+def cmd_review_show(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        payload = _review_payload(service, args.review_id)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.json:
+        _print_json(payload)
+    else:
+        _print_review(payload)
+        print("\n  alternatives:")
+        for item in payload.get("alternatives") or []:
+            print(f"    {item.get('rank')}. {item.get('placement_type')} {float(item.get('score') or 0):.2f} "
+                  f"{_placement_scope(item)}  {item.get('proposed_content') or '-'}")
+        for action in (payload.get("history") or {}).get("actions") or []:
+            print(f"    action {action['created_at']}: {action['action']} -> {action['to_status']}")
+    return 0
+
+
+def _run_review_action(args: argparse.Namespace, action: str) -> int:
+    db, service = _review_service(args)
+    try:
+        if action == "accept":
+            rid = service.accept(args.review_id, agent=args.agent, target=args.target)
+        elif action == "reject":
+            rid = service.reject(args.review_id)
+        elif action == "defer":
+            rid = service.defer(args.review_id)
+        elif action == "test_first":
+            rid = service.test_first(args.review_id)
+        elif action == "choose":
+            rid = service.choose(args.review_id, args.placement)
+        else:
+            if args.content is not None:
+                text = args.content
+            else:
+                text = Path(args.file).read_text("utf-8")
+            rid = service.edit(args.review_id, text)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    print(f"{rid}: {action} recorded; Apply remains explicit")
+    return 0
+
+
+def cmd_review_accept(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "accept")
+
+
+def cmd_review_reject(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "reject")
+
+
+def cmd_review_defer(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "defer")
+
+
+def cmd_review_test_first(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "test_first")
+
+
+def cmd_review_edit(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "edit")
+
+
+def cmd_review_choose(args: argparse.Namespace) -> int:
+    return _run_review_action(args, "choose")
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    db, service = _review_service(args)
+    try:
+        result = service.apply(args.review_id, dry_run=args.dry_run)
+    except Exception as exc:
+        log.error(str(exc))
+        return 2
+    finally:
+        db.close()
+    if args.dry_run:
+        print(f"Dry-run: {result['target_path']}")
+        print(f"Target hash: {result.get('target_hash') or '(missing)'}")
+        print(result.get("unified_diff") or "(no changes)")
+        print("Writes: no")
+    else:
+        print(f"{result['outcome']}: {result['target_path']}")
     return 0
 
 

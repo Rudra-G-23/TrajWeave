@@ -302,3 +302,15 @@ Formal write-up: [`STAGE_6_REPORT.md`](./STAGE_6_REPORT.md).
 - Real database validation returned 0 eligible Experiences and 0 proposal sets,
   expected under unchanged Stage 5 thresholds. The database received only the
   Stage 6 migration and an empty generation run.
+# Stage 7 - Review and Apply
+
+Implemented on `feat/stage7` from `7d3aa02`.
+
+- Added schema v4 for reviews, immutable action history, previews, and apply outcomes.
+- Added explicit Accept, Reject, Defer, Edit, Test first, alternative selection, Preview, Dry-run, and Apply flows.
+- Added safe Project, Scoped, Global, Skill, and Ignore handling with deterministic managed markers.
+- Preserved existing policy content and protected against stale previews, malformed targets, binary files, traversal, and symlink escape.
+- Added atomic replacement and pending apply intents.
+- Added CLI and loopback UI review controls with Apply visually separate from Accept.
+- Added temporary repository and adversarial fixtures.
+- Stage 7 does not implement Stage 8 evaluation or future adapter/platform roadmap items.

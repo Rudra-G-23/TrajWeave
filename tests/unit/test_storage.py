@@ -14,11 +14,11 @@ def _db(tmp_path) -> Database:
 def test_migrations_apply_once(tmp_path):
     path = tmp_path / "tw.db"
     db1 = Database(path)
-    assert db1.schema_version == 3
+    assert db1.schema_version == 5
     db1.close()
     db2 = Database(path)  # re-open: no error, still at head
-    assert db2.schema_version == 3
-    # Stage 5 and Stage 6 tables exist.
+    assert db2.schema_version == 5
+    # Stage 5, Stage 6, and Stage 7 tables exist.
     names = {
         r["name"]
         for r in db2.query("SELECT name FROM sqlite_master WHERE type='table'")
@@ -27,6 +27,8 @@ def test_migrations_apply_once(tmp_path):
         "experiences", "experience_occurrences", "experience_evidence",
         "placement_runs", "placement_proposal_sets", "placement_proposals",
         "placement_proposal_evidence",
+        "policy_reviews", "policy_review_actions", "policy_review_previews",
+        "policy_review_variants", "policy_applications",
     } <= names
 
 

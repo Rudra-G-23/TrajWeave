@@ -354,6 +354,18 @@ h3 { font-size: 13px; margin: 18px 0 8px; }
 }
 
 /* ---- placement proposals (Stage 6, read-only) -------------------- */
+
+.review-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin: 1rem 0; }
+.review-actions button { cursor: pointer; }
+.review-actions .accept-button { border-color: #496b9b; }
+.review-actions .apply-button { background: #8a2e2e; color: white; border-color: #8a2e2e; margin-left: 1rem; }
+.review-actions .apply-button:disabled { opacity: .45; cursor: not-allowed; }
+.review-editor { box-sizing: border-box; display: block; font: inherit; line-height: 1.45; margin: .5rem 0 1rem; max-width: 100%; padding: .7rem; width: min(900px, 100%); }
+.review-targets { display: flex; flex-wrap: wrap; gap: .6rem; margin: .7rem 0; }
+.review-targets input, .review-targets select { font: inherit; padding: .45rem; min-width: 15rem; }
+.review-diff { background: #10151c; color: #d6e1ec; max-height: 28rem; overflow: auto; padding: 1rem; white-space: pre-wrap; }
+.review-status-accepted, .review-status-applied { color: #1b6f3a; }
+.review-status-rejected, .review-status-stale { color: #8a2e2e; }
 .placement-recommended {
   border-left: 3px solid var(--primary);
   background: var(--primary-weak);
