@@ -438,6 +438,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  project_id : {project.project_id}")
     print(f"  root       : {project.root}")
     print(f"  marker     : {Path(project.root) / '.trajweave' / 'project.json'}")
+    print(f"  gitignore  : {Path(project.root) / '.gitignore'} (.trajweave/ ignored)")
     print("\nThis repository's Codex/Claude sessions will now be imported by 'trajweave import'.")
     return 0
 

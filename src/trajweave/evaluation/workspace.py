@@ -18,16 +18,17 @@ sandbox. This is a deliberate, documented limitation, not an oversight.
 
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from trajweave.evaluation.errors import EvaluationError
 from trajweave.projects.git import find_repo_root
 from trajweave.projects.registry import _is_unsafe_project_root
+from trajweave.utils.filesystem import remove_tree
 
 _GIT_TIMEOUT = 30
 
@@ -89,7 +90,10 @@ def has_uncommitted_changes(repo_root: Path) -> bool:
 
 
 def _clone_at_commit(source: Path, dest: Path, commit: str) -> None:
-    _run_git(["clone", "--local", "--no-checkout", "--quiet", str(source), str(dest)])
+    clone_args = ["clone", "--local", "--no-checkout", "--quiet"]
+    if os.name == "nt":
+        clone_args.append("--no-hardlinks")
+    _run_git([*clone_args, str(source), str(dest)])
     _run_git(["-C", str(dest), "checkout", "--quiet", "--detach", commit])
     # Isolation must survive a crash: no isolated clone should ever be able to
     # fetch from or push to the developer's real repository.
@@ -114,4 +118,13 @@ def isolated_workspaces(repo_root: Path, commit: str) -> Iterator[tuple[Path, Pa
         _clone_at_commit(repo_root, candidate, commit)
         yield baseline, candidate
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        _remove_workspace(base)
+
+
+def _remove_workspace(path: Path) -> None:
+    """Remove an ephemeral workspace, accommodating transient Windows locks."""
+
+    try:
+        remove_tree(path)
+    except OSError:
+        pass

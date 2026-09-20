@@ -91,7 +91,7 @@ def test_review_accept_preview_apply_and_history(tmp_path, monkeypatch, capsys):
     code, out = _run(capsys, "apply", proposal_id)
     assert code == 0 and "already_applied" in out
     db = Database(home / "trajweave.db")
-    history = Repository(db).policy_review_history(f"RV-PS-E-0001")
+    history = Repository(db).policy_review_history("RV-PS-E-0001")
     assert any(row["action"] == "accept" for row in history["actions"])
     assert len(history["applications"]) == 2
     db.close()

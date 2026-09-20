@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run --no-sync ruff check .
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: git-diff-check
+        name: git diff --check
+        entry: git diff --check --cached
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: pytest
+        name: pytest
+        entry: uv run --no-sync python -m pytest -vv -ra --durations=30
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        verbose: true

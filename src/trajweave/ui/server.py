@@ -14,15 +14,18 @@ Design constraints (see the Stage 4 brief):
 from __future__ import annotations
 
 import json
+import os
+import socket
 import sqlite3
 import threading
 import time
 import webbrowser
+from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from trajweave import __version__
@@ -779,7 +782,12 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
 # ----------------------------------------------------------------------
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def make_server(

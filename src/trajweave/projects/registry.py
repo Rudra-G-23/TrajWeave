@@ -5,6 +5,9 @@ with ``trajweave init``. Registration writes a tiny ``<repo>/.trajweave/
 project.json`` marker *and* a row in the global DB. Either one is enough to keep
 a repo "tracked" (so history survives the repo being deleted, and a wiped DB can
 self-heal from the marker).
+
+``init`` also adds a ``.trajweave/`` entry to the repo's ``.gitignore`` (creating
+the file if needed) so the opt-in directory is never accidentally committed.
 """
 
 from __future__ import annotations
@@ -26,6 +29,14 @@ log = get_logger("projects.registry")
 
 MARKER_SCHEMA = 1
 
+#: Comment written above the ``.trajweave/`` entry ``init`` adds to ``.gitignore``.
+GITIGNORE_MARKER_COMMENT = "# TrajWeave opt-in marker"
+#: Pattern ``init`` adds to ``.gitignore`` so the opt-in dir is never committed.
+GITIGNORE_MARKER_PATTERN = f"{REPO_DIR_NAME}/"
+_GITIGNORE_EQUIVALENT_PATTERNS = frozenset(
+    {REPO_DIR_NAME, f"{REPO_DIR_NAME}/", f"/{REPO_DIR_NAME}", f"/{REPO_DIR_NAME}/"}
+)
+
 
 class RepoNotFoundError(RuntimeError):
     """Raised when ``trajweave init`` is run outside a recognisable repository."""
@@ -43,6 +54,35 @@ def _now() -> str:
 
 def _marker_path(root: Path) -> Path:
     return root / REPO_DIR_NAME / REPO_CONFIG_NAME
+
+
+def _ensure_gitignored(root: Path) -> bool:
+    """Make sure ``<root>/.gitignore`` ignores the ``.trajweave/`` opt-in dir.
+
+    Creates ``.gitignore`` if it is missing, otherwise appends the marker block
+    unless an equivalent ``.trajweave`` pattern is already present. Returns
+    ``True`` when the file was created or modified. Best-effort: any filesystem
+    error is logged and swallowed so it never blocks ``init``.
+    """
+
+    gitignore = root / ".gitignore"
+    block = f"{GITIGNORE_MARKER_COMMENT}\n{GITIGNORE_MARKER_PATTERN}\n"
+    try:
+        if not gitignore.exists():
+            gitignore.write_text(block, "utf-8")
+            return True
+
+        existing = gitignore.read_text("utf-8")
+        for line in existing.splitlines():
+            if line.split("#", 1)[0].strip() in _GITIGNORE_EQUIVALENT_PATTERNS:
+                return False
+
+        separator = "" if existing == "" or existing.endswith("\n") else "\n"
+        gitignore.write_text(existing + separator + "\n" + block, "utf-8")
+        return True
+    except OSError as exc:
+        log.warning("could not update %s: %s", gitignore, exc)
+        return False
 
 
 def _shared_system_roots() -> set[Path]:
@@ -100,6 +140,14 @@ class ResolvedProject:
 
 
 class ProjectRegistry:
+    """Implements repository opt-in (``trajweave init``) and the import
+    hot-path lookup that decides whether a session belongs to a tracked project.
+
+    Registration writes both a ``<repo>/.trajweave/project.json`` marker and a
+    DB row; either one alone is enough to keep a repo tracked, so history
+    survives the repo being deleted and a wiped DB self-heals from the marker.
+    """
+
     def __init__(self, repo: Repository):
         self.repo = repo
 
@@ -152,6 +200,7 @@ class ProjectRegistry:
             "schema": MARKER_SCHEMA,
         }
         marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", "utf-8")
+        _ensure_gitignored(root)
 
         row = self.repo.upsert_project(
             project_id=project_id,

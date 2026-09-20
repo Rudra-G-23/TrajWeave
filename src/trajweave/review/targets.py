@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from trajweave.utils.filesystem import retry_windows_sharing_violation
+
 
 class SafetyError(ValueError):
     """A target or rendered policy failed a safety check."""
@@ -196,8 +198,61 @@ def _secure_parent_fd(root: Path, parent: Path, *, create: bool) -> int:
         raise
 
 
+def _uses_windows_path_fallback() -> bool:
+    return os.name == "nt"
+
+
+def _validate_windows_parent(root: Path, parent: Path, *, create: bool) -> None:
+    """Validate a writable directory tree on platforms without directory fds."""
+
+    try:
+        parent.relative_to(root)
+    except ValueError as exc:
+        raise SafetyError(f"target parent escapes approved location: {parent}") from exc
+
+    if not root.exists():
+        if not create:
+            raise FileNotFoundError(root)
+        root.mkdir(parents=True, exist_ok=True)
+
+    if root.is_symlink() or not root.is_dir():
+        raise SafetyError(f"approved root is not safely traversable: {root}")
+
+    current = root
+    for component in parent.relative_to(root).parts:
+        current /= component
+        if not current.exists():
+            if not create:
+                raise FileNotFoundError(current)
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+        if current.is_symlink() or not current.is_dir():
+            raise SafetyError(f"approved directory component is not safely traversable: {component}")
+
+
 def _read_existing(path: Path, root: Path) -> tuple[str, bytes | None]:
     """Read a target while refusing symlinks in every path component."""
+
+    if _uses_windows_path_fallback():
+        try:
+            _validate_windows_parent(root, path.parent, create=False)
+        except FileNotFoundError:
+            return "", None
+        try:
+            if not path.exists():
+                return "", None
+            if path.is_symlink() or not path.is_file():
+                raise SafetyError(f"target is not a regular file: {path}")
+            data = path.read_bytes()
+            if b"\x00" in data:
+                raise SafetyError(f"target is binary or contains NUL bytes: {path}")
+            return data.decode("utf-8"), data
+        except UnicodeDecodeError as exc:
+            raise SafetyError(f"target is not valid UTF-8: {path}") from exc
+        except OSError as exc:
+            raise SafetyError(f"cannot read target: {path}") from exc
 
     try:
         parent_fd = _secure_parent_fd(root, path.parent, create=False)
@@ -309,6 +364,36 @@ def build_preview(*, target: TargetSpec, experience_id: str, review_id: str, con
 
 def _atomic_replace(path: Path, data: bytes, root: Path) -> None:
     """Replace one regular file using a directory fd and a no-follow policy."""
+
+    if _uses_windows_path_fallback():
+        try:
+            _validate_windows_parent(root, path.parent, create=True)
+            if path.exists() and (path.is_symlink() or not path.is_file()):
+                raise SafetyError(f"target changed to a non-regular file: {path}")
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.trajweave-", delete=False) as handle:
+                temp_path = Path(handle.name)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                retry_windows_sharing_violation(
+                    lambda: os.replace(temp_path, path),
+                    is_windows=True,
+                )
+            except OSError:
+                try:
+                    retry_windows_sharing_violation(
+                        lambda: temp_path.unlink(missing_ok=True),
+                        is_windows=True,
+                    )
+                except OSError:
+                    pass
+                raise
+            return
+        except SafetyError:
+            raise
+        except OSError as exc:
+            raise SafetyError(f"atomic replacement failed for {path}") from exc
 
     try:
         parent_fd = _secure_parent_fd(root, path.parent, create=True)

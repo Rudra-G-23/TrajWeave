@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from trajweave.review.targets import SafetyError, apply_preview, build_preview, resolve_target
+from trajweave.review.targets import (
+    SafetyError,
+    apply_preview,
+    build_preview,
+    resolve_target,
+)
 
 
 def _target(tmp_path, name="AGENTS.md"):
@@ -25,6 +30,49 @@ def test_preview_preserves_human_content_and_apply_is_idempotent(tmp_path):
     first = path.read_text("utf-8")
     assert apply_preview(preview) == "already applied"
     assert path.read_text("utf-8") == first
+
+
+def test_preview_and_apply_use_safe_windows_fallback(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    root, target = _target(tmp_path)
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    preview = build_preview(
+        target=target,
+        experience_id="E-0001",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+    assert apply_preview(preview) == "applied"
+    assert "trajweave:managed" in (root / "AGENTS.md").read_text("utf-8")
+
+
+def test_windows_fallback_retries_transient_replace_failure(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    class SharingViolation(OSError):
+        winerror = 5
+
+    root, target = _target(tmp_path)
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    real_replace = targets_mod.os.replace
+    attempts = []
+
+    def replace(source, destination):
+        attempts.append((source, destination))
+        if len(attempts) < 3:
+            raise SharingViolation("access denied")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(targets_mod.os, "replace", replace)
+    preview = build_preview(
+        target=target,
+        experience_id="E-0001",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+    assert apply_preview(preview) == "applied"
+    assert len(attempts) == 3
 
 
 def test_stale_preview_refuses_human_edit(tmp_path):
@@ -80,6 +128,31 @@ def test_global_default_and_skill_targets_are_safe_when_missing(tmp_path):
     root.mkdir()
     skill = resolve_target(placement_type="skill", project_root=root, agent="codex", target=None, global_root=None, review_id="RV-unsafe/../x")
     assert skill.path.name == "SKILL.md" and skill.path.is_relative_to(root)
+
+
+def test_windows_fallback_creates_missing_global_root(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    global_root = tmp_path / "home" / "policies" / "codex"
+
+    target = resolve_target(
+        placement_type="global_rule",
+        project_root=None,
+        agent="codex",
+        target=None,
+        global_root=global_root,
+        review_id="RV-test",
+    )
+    preview = build_preview(
+        target=target,
+        experience_id="E-1",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+
+    assert apply_preview(preview) == "applied"
+    assert (global_root / "AGENTS.md").is_file()
 
 
 @pytest.mark.parametrize("placement_type", ["global_rule", "scoped_rule", "skill"])

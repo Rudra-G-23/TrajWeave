@@ -68,7 +68,7 @@ def test_rebuild_experiences_persists_evidence_and_reuses_ids(tmp_path):
     repo = _repo(tmp_path)
     tids = [_seed_traj(repo, i) for i in range(3)]
     occ = [_occ(t) for t in tids]
-    for t, o in zip(tids, occ):
+    for t, o in zip(tids, occ, strict=True):
         repo.replace_trajectory_occurrences(t, [o])
 
     real = [
@@ -82,7 +82,9 @@ def test_rebuild_experiences_persists_evidence_and_reuses_ids(tmp_path):
         )
         for r in repo.load_occurrences(classifications=("support", "ambiguous"))
     ]
-    for o, r in zip(real, repo.load_occurrences(classifications=("support", "ambiguous"))):
+    for o, r in zip(
+        real, repo.load_occurrences(classifications=("support", "ambiguous")), strict=True
+    ):
         o.id = r["id"]
     profiles = {
         t: TrajectoryProfile(t, "p1", "success", "2026-08-20T00:00:00+00:00",

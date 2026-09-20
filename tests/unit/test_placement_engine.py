@@ -6,8 +6,7 @@ Stage 5 repository read methods.  They are never inserted into a real database.
 
 from __future__ import annotations
 
-from trajweave.placement import build_proposals
-from trajweave.placement import engine
+from trajweave.placement import build_proposals, engine
 from trajweave.placement.scope import normalize_repository_path
 
 

@@ -16,13 +16,18 @@ predate it.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from trajweave.adapters.base import BaseAdapter, first_jsonl_object, iter_jsonl
 from trajweave.models.enums import Agent, CommandKind, EventType, TaskSource
 from trajweave.models.events import NormalizedEvent
-from trajweave.models.trajectory import DiscoveredSession, NormalizedTrajectory, SourceSessionRef
+from trajweave.models.trajectory import (
+    DiscoveredSession,
+    NormalizedTrajectory,
+    SourceSessionRef,
+)
 from trajweave.normalization.commands import classify_command, command_event_family
 from trajweave.normalization.paths import relativize
 from trajweave.normalization.redaction import redact
@@ -44,6 +49,13 @@ _FILENAME_RE = re.compile(r"rollout-.*?-([0-9a-fA-F-]{36})\.jsonl$")
 
 
 class CodexAdapter(BaseAdapter):
+    """Parses Codex CLI JSONL sessions into normalized trajectories.
+
+    Normalizes primarily off Codex's semantic ``event_msg`` / ``item_completed``
+    item stream, falling back to the raw ``response_item`` stream for older
+    sessions that predate it (see the module docstring for the line format).
+    """
+
     agent = Agent.CODEX
     agent_name = "codex"
     root_env_var = "TRAJWEAVE_CODEX_ROOT"
@@ -159,7 +171,7 @@ class CodexAdapter(BaseAdapter):
         return traj
 
     # -- record handlers ------------------------------------------------
-    def _handle_meta(self, payload: dict, traj: NormalizedTrajectory, ctx: "_ParseState") -> None:
+    def _handle_meta(self, payload: dict, traj: NormalizedTrajectory, ctx: _ParseState) -> None:
         traj.cwd = traj.cwd or payload.get("cwd")
         traj.cli_version = payload.get("cli_version") or traj.cli_version
         git = payload.get("git")
@@ -170,7 +182,7 @@ class CodexAdapter(BaseAdapter):
         if ctx.repo_root is None and payload.get("cwd"):
             ctx.cwd_hint = payload.get("cwd")
 
-    def _handle_turn_context(self, payload: dict, traj: NormalizedTrajectory, ctx: "_ParseState") -> None:
+    def _handle_turn_context(self, payload: dict, traj: NormalizedTrajectory, ctx: _ParseState) -> None:
         model = payload.get("model")
         if model:
             traj.model = model
@@ -178,7 +190,7 @@ class CodexAdapter(BaseAdapter):
             traj.cwd = traj.cwd or payload.get("cwd")
 
     def _handle_event_msg(
-        self, payload: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ParseState"
+        self, payload: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ParseState
     ) -> bool:
         ptype = payload.get("type")
         if ptype == "token_count":
@@ -231,7 +243,7 @@ class CodexAdapter(BaseAdapter):
         return False
 
     def _handle_item(
-        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ParseState"
+        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ParseState
     ) -> None:
         itype = item.get("type")
 
@@ -299,7 +311,7 @@ class CodexAdapter(BaseAdapter):
 
     # -- item emitters ------------------------------------------------
     def _emit_user_message(
-        self, text: str, ts: str | None, traj: NormalizedTrajectory, ctx: "_ParseState"
+        self, text: str, ts: str | None, traj: NormalizedTrajectory, ctx: _ParseState
     ) -> None:
         human = strip_injected_context(text)
         if not human:
@@ -322,7 +334,7 @@ class CodexAdapter(BaseAdapter):
         ctx.work_since_last_prompt = 0
 
     def _emit_command(
-        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ParseState"
+        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ParseState
     ) -> None:
         argv = item.get("command")
         command = _extract_command(argv)
@@ -374,7 +386,7 @@ class CodexAdapter(BaseAdapter):
                 ))
 
     def _emit_file_change(
-        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: "_ParseState"
+        self, item: dict, ts: str | None, traj: NormalizedTrajectory, ctx: _ParseState
     ) -> None:
         changes = item.get("changes")
         if not isinstance(changes, dict):
@@ -413,7 +425,7 @@ class CodexAdapter(BaseAdapter):
         ctx.note_work()
 
     # -- fallback: raw response_item stream --------------------------
-    def _normalize_from_response_items(self, ctx: "_ParseState", traj: NormalizedTrajectory) -> None:
+    def _normalize_from_response_items(self, ctx: _ParseState, traj: NormalizedTrajectory) -> None:
         traj.parse_warnings.append("no item_completed stream; used response_item fallback")
         pending_calls: dict[str, dict] = {}
         for ts, payload in ctx.raw_response_items:
@@ -469,7 +481,7 @@ class CodexAdapter(BaseAdapter):
 
     # -- finalization ------------------------------------------------
     def _finalize(
-        self, traj: NormalizedTrajectory, ctx: "_ParseState", session: DiscoveredSession
+        self, traj: NormalizedTrajectory, ctx: _ParseState, session: DiscoveredSession
     ) -> None:
         traj.cwd = traj.cwd or session.cwd or ctx.cwd_hint
         traj.git_remote = traj.git_remote or session.git_remote

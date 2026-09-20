@@ -126,6 +126,16 @@ def _build_profile(traj: Any, events: list[Any]) -> TrajectoryProfile:
 
 
 class ExperienceExtractor:
+    """Turns stored normalized trajectories into evidence-backed candidate
+    experiences.
+
+    Occurrence *detection* is incremental - it only re-scans trajectories that
+    are new or whose source hash changed (``rebuild=True`` forces all). Experience
+    *grouping* is always a full recompute from the persisted occurrence table so
+    the aggregate counts, contradictions, and confidence stay trivially
+    consistent. Nothing here mutates a repository or decides placement.
+    """
+
     def __init__(self, repo: Repository, cfg: ExperienceConfig | None = None):
         self.repo = repo
         self.cfg = (cfg or ExperienceConfig()).validated()

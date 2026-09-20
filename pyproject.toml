@@ -4,26 +4,40 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trajweave"
-version = "0.5.0"
-description = "Local-first research substrate for coding-agent trajectory learning (data layer, read-only explorer, deterministic experience extraction)."
+version = "0.5.0a1"
+description = "Local-first trajectory learning for coding agents. Every run makes the next one better."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Rudra Prasad Bhuyan", email = "rudra@algen.ai" }]
-keywords = ["coding-agent", "trajectory", "codex", "claude-code", "observability"]
+authors = [{ name = "Rudra Prasad Bhuyan", email = "rudraprasadbhuyan999@gmail.com" }]
+keywords = [
+    "coding-agents",
+    "ai-agents",
+    "agent-trajectories",
+    "trajectory-learning",
+    "agent-observability",
+    "agent-learning",
+    "codex-cli",
+    "claude-code",
+    "local-first",
+    "developer-tools",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
 
-# Stage 0-3 deliberately uses only the Python standard library.
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+dev = ["pre-commit>=4.0", "pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.6"]
 
 [project.scripts]
 trajweave = "trajweave.cli.main:main"
@@ -33,8 +47,6 @@ Homepage = "https://github.com/Rudra-G-23/TrajWeave"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trajweave"]
-# The Stage 4 UI assets (src/trajweave/ui/static/*.{html,css,js}) are picked up
-# automatically as package data by the `packages` entry above.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,3 +54,14 @@ addopts = "-ra"
 markers = [
     "integration: end-to-end tests that build a temp git repo and run the import pipeline",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# E501 (line length) is advisory only: a large amount of pre-existing code was
+# written to a wider budget, so it is reported by editors but not enforced in CI.
+ignore = ["E501"]

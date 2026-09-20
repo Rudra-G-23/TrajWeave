@@ -10,8 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-
 from tests.conftest import make_claude_session, make_codex_session
+
 from trajweave.cli.main import main
 from trajweave.models.enums import Agent, EventType, FinalStatus
 from trajweave.models.events import NormalizedEvent

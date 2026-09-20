@@ -36,7 +36,7 @@ from trajweave.storage.repository import Repository  # noqa: E402
 
 def register_real_repos(repo: Repository) -> int:
     roots: dict[str, str] = {}
-    for name, cls in ADAPTERS.items():
+    for _name, cls in ADAPTERS.items():
         adapter = cls(None)
         if not adapter.root.is_dir():
             continue

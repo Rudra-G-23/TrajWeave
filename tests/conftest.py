@@ -11,10 +11,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    """Every test gets its own TrajWeave home - never touch the real ~/.trajweave."""
+    """Keep TrajWeave and agent-session storage inside the test directory."""
 
     home = tmp_path / "tw-home"
     monkeypatch.setenv("TRAJWEAVE_HOME", str(home))
+    for variable, name in (
+        ("TRAJWEAVE_CODEX_ROOT", "codex-sessions"),
+        ("TRAJWEAVE_CLAUDE_ROOT", "claude-projects"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        monkeypatch.setenv(variable, str(root))
     return home
 
 
@@ -42,6 +49,8 @@ def git_repo(tmp_path) -> Path:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
+    _git(root, "config", "maintenance.auto", "false")
+    _git(root, "config", "gc.auto", "0")
     (root / "app.py").write_text("print('hi')\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "initial")
@@ -59,6 +68,8 @@ def eval_repo(tmp_path) -> Path:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
+    _git(root, "config", "maintenance.auto", "false")
+    _git(root, "config", "gc.auto", "0")
     (root / "app.py").write_text("print('hi')\n")
     (root / "legacy.txt").write_text("legacy\n")
     _git(root, "add", "-A")
@@ -151,6 +162,8 @@ def other_git_repo(tmp_path) -> Path:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
+    _git(root, "config", "maintenance.auto", "false")
+    _git(root, "config", "gc.auto", "0")
     (root / "README.md").write_text("# repo b\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "initial")

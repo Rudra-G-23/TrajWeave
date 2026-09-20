@@ -7,8 +7,9 @@ projects, sessions, trajectories, or events.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from trajweave.models.trajectory import NormalizedTrajectory
 from trajweave.storage.database import Database
@@ -33,6 +34,14 @@ def _json(value: Any) -> str | None:
 
 
 class Repository:
+    """The persistence API for the rest of the codebase.
+
+    This is the only layer that writes SQL. Every write is an idempotent upsert
+    keyed on a stable id, so re-running an import (or replaying a partially
+    completed one) never creates duplicate projects, sessions, trajectories, or
+    events.
+    """
+
     def __init__(self, db: Database):
         self.db = db
 

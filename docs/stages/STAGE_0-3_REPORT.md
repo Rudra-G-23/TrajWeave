@@ -78,7 +78,7 @@ src/trajweave/
 └── utils/          hashing.py timeparse.py logging.py
 tests/
 ├── unit/ (72)   integration/ (10)   fixtures/{codex,claude}/   conftest.py
-docs/STAGE_0-3_REPORT.md
+docs/stages/STAGE_0-3_REPORT.md
 ```
 
 ---

@@ -102,7 +102,7 @@ deliverable write-up lives in [`STAGE_0-3_REPORT.md`](./STAGE_0-3_REPORT.md).
 ### 9. Docs + commit
 
 - Rewrote `README.md` (privacy behaviour, install, commands, schema, layout).
-- Added `docs/STAGE_0-3_REPORT.md` (full completion report + deviations).
+- Added `docs/stages/STAGE_0-3_REPORT.md` (full completion report + deviations).
 - `.gitignore`: ignore `.trajweave/`.
 - Committed as `feat: TrajWeave Stage 0-3 data substrate` (`8af4d2f`) on
   `feat/stage1`.

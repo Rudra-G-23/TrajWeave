@@ -1,3 +1,5 @@
+"""The :class:`NormalizedEvent` dataclass - one step in a normalized trajectory."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

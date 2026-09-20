@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 
 from trajweave.experience.grouping import TrajectoryProfile, build_experiences
 from trajweave.experience.models import (
+    AMBIGUOUS,
     PATTERN_FAILURE_REPAIR,
     STATUS_CANDIDATE,
     STATUS_NEEDS_MORE,
-    AMBIGUOUS,
     SUPPORT,
     Occurrence,
 )

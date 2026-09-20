@@ -20,6 +20,7 @@ from trajweave.models.trajectory import NormalizedTrajectory, SourceSessionRef
 from trajweave.placement import PlacementGenerator
 from trajweave.storage.database import Database
 from trajweave.storage.repository import Repository
+from trajweave.utils.filesystem import remove_tree
 
 pytestmark = pytest.mark.integration
 
@@ -360,8 +361,7 @@ def test_deleted_repository_produces_invalid_comparison(capsys, seeded_review, e
     assert code == 0
     evaluation_id = json.loads(out)["evaluation_id"]
 
-    import shutil
-    shutil.rmtree(movable)
+    remove_tree(movable)
 
     code, _ = _run(capsys, "eval", "run", evaluation_id, "--repetitions", "1")
     assert code == 0  # infra failures are recorded, not raised past the CLI

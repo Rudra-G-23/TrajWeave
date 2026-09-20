@@ -14,7 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from trajweave.review.targets import SafetyError, apply_preview, build_preview, resolve_target
+from trajweave.review.targets import (
+    SafetyError,
+    apply_preview,
+    build_preview,
+    resolve_target,
+)
 
 __all__ = ["SafetyError", "apply_candidate_policy"]
 
