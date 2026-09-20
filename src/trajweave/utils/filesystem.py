@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,7 +40,24 @@ def retry_windows_sharing_violation(
     raise AssertionError("unreachable")
 
 
-def remove_tree(path: Path) -> None:
-    """Remove a directory tree, retrying transient Windows sharing violations."""
+def _remove_readonly(func, path, exc_info) -> None:
+    exc = exc_info[1]
 
-    retry_windows_sharing_violation(lambda: shutil.rmtree(path))
+    if os.name == "nt" and isinstance(exc, PermissionError):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+        return
+
+    raise exc
+
+
+def remove_tree(path: Path) -> None:
+    """Remove a directory tree robustly on Windows."""
+
+    def operation() -> None:
+        if not path.exists():
+            return
+
+        shutil.rmtree(path, onerror=_remove_readonly)
+
+    retry_windows_sharing_violation(operation)

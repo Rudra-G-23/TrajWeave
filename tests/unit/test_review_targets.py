@@ -130,6 +130,31 @@ def test_global_default_and_skill_targets_are_safe_when_missing(tmp_path):
     assert skill.path.name == "SKILL.md" and skill.path.is_relative_to(root)
 
 
+def test_windows_fallback_creates_missing_global_root(tmp_path, monkeypatch):
+    import trajweave.review.targets as targets_mod
+
+    monkeypatch.setattr(targets_mod, "_uses_windows_path_fallback", lambda: True)
+    global_root = tmp_path / "home" / "policies" / "codex"
+
+    target = resolve_target(
+        placement_type="global_rule",
+        project_root=None,
+        agent="codex",
+        target=None,
+        global_root=global_root,
+        review_id="RV-test",
+    )
+    preview = build_preview(
+        target=target,
+        experience_id="E-1",
+        review_id="RV-test",
+        content="Keep builds green.",
+    )
+
+    assert apply_preview(preview) == "applied"
+    assert (global_root / "AGENTS.md").is_file()
+
+
 @pytest.mark.parametrize("placement_type", ["global_rule", "scoped_rule", "skill"])
 def test_each_writable_placement_renders_a_target(tmp_path, placement_type):
     root = tmp_path / "repo"

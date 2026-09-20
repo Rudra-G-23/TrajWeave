@@ -44,3 +44,24 @@ def test_retry_windows_sharing_violation_reraises_non_transient_error():
             lambda: (_ for _ in ()).throw(PermissionError("not a sharing violation")),
             is_windows=True,
         )
+
+
+def test_remove_readonly_retries_with_write_permission(monkeypatch, tmp_path):
+    import trajweave.utils.filesystem as filesystem
+
+    path = tmp_path / "readonly"
+    calls = []
+    chmod_calls = []
+    error = PermissionError("access denied")
+
+    monkeypatch.setattr(filesystem.os, "name", "nt")
+    monkeypatch.setattr(filesystem.os, "chmod", lambda target, mode: chmod_calls.append((target, mode)))
+
+    filesystem._remove_readonly(
+        lambda target: calls.append(target),
+        path,
+        (PermissionError, error, None),
+    )
+
+    assert chmod_calls == [(path, filesystem.stat.S_IWRITE)]
+    assert calls == [path]

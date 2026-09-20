@@ -210,6 +210,14 @@ def _validate_windows_parent(root: Path, parent: Path, *, create: bool) -> None:
     except ValueError as exc:
         raise SafetyError(f"target parent escapes approved location: {parent}") from exc
 
+    if not root.exists():
+        if not create:
+            raise FileNotFoundError(root)
+        root.mkdir(parents=True, exist_ok=True)
+
+    if root.is_symlink() or not root.is_dir():
+        raise SafetyError(f"approved root is not safely traversable: {root}")
+
     current = root
     for component in parent.relative_to(root).parts:
         current /= component
