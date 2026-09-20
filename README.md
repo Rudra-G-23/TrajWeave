@@ -4,7 +4,8 @@
 
 [![CI](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml)
 
-> Every run makes the next one better.
+[![PyPI](https://img.shields.io/pypi/v/trajweave.svg)](https://pypi.org/project/trajweave/)
+[![Python versions](https://img.shields.io/pypi/pyversions/trajweave.svg)](https://pypi.org/project/trajweave/)
 
 TrajWeave is a local-first learning loop for coding-agent work. It imports Codex and Claude Code sessions, turns them into normalized trajectories, extracts evidence-backed experiences, proposes where they belong, and keeps a human in control of review, evaluation, and policy changes.
 
@@ -12,7 +13,7 @@ Nothing is sent to a cloud service. TrajWeave only processes repositories that y
 
 ## How it works
 
-The complete stage map, data flow, and boundaries are in [`docs/STAGES.md`](docs/STAGES.md). In brief:
+The complete stage map, data flow, and boundaries are in [`docs/stages/STAGES.md`](docs/stages/STAGES.md). In brief:
 
 ```text
 session files -> trajectories -> experiences -> placement proposals
@@ -26,7 +27,7 @@ Each step stores its output locally and keeps links to the evidence behind it. N
 Requires Python 3.10+.
 
 ```bash
-pip install -e .
+pip install --pre trajweave
 ```
 
 For development:
@@ -90,5 +91,5 @@ For Windows PowerShell, pip-based setup, CI-equivalent diagnostics, and GitHub
 Actions commands, see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-See [`SECURITY.md`](SECURITY.md) and [`docs/STAGES.md`](docs/STAGES.md) for the
-security policy and architecture stages.
+See [`SECURITY.md`](SECURITY.md) and [`docs/stages/STAGES.md`](docs/stages/STAGES.md)
+for the security policy and architecture stages.

@@ -1,7 +1,7 @@
 # Security Policy
 
-TrajWeave runs entirely on your machine and reads coding-agent transcripts that
-often contain sensitive material. Security issues are taken seriously.
+TrajWeave runs locally and reads coding-agent transcripts that may contain
+sensitive material.
 
 ## What counts as a security issue
 
@@ -24,10 +24,8 @@ Report privately if you find any of the following:
 - Path traversal, SQL injection, or unsafe deserialization anywhere in the
   ingest, storage, or apply paths.
 
-Ordinary crashes, malformed-input handling that fails safe (an import that skips
-a bad line or aborts one session without touching others), and feature requests
-are **not** security issues - please use the normal
-[issue tracker](https://github.com/Rudra-G-23/TrajWeave/issues) for those.
+For ordinary bugs and feature requests, use the
+[issue tracker](https://github.com/Rudra-G-23/TrajWeave/issues).
 
 ## How to report
 
@@ -40,11 +38,6 @@ Use GitHub's private vulnerability reporting:
 3. Fill in the private advisory form.
 
 This keeps the report visible only to the maintainers until a fix is available.
-
-> Maintainer note: if the "Report a vulnerability" button is not visible, enable
-> **Private vulnerability reporting** in *Settings -> Code security and analysis*.
-> There is currently no dedicated security contact address; the private advisory
-> form is the only supported private channel.
 
 ## What a useful report contains
 
