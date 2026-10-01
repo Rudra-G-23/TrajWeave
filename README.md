@@ -1,6 +1,10 @@
 # TrajWeave
 
-<img src="assets/trajweave-banner.svg" alt="TrajWeave banner" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Rudra-G-23/TrajWeave/refs/heads/feat/deploy-pypi/assets/trajweave-banner.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Rudra-G-23/TrajWeave/refs/heads/feat/deploy-pypi/assets/trajweave-banner.svg">
+  <img alt="TrajWeave — Local-first trajectory learning for coding agents" src="https://raw.githubusercontent.com/Rudra-G-23/TrajWeave/refs/heads/feat/deploy-pypi/assets/trajweave-banner.svg" width="100%">
+</picture>
 
 <p align="center">
   <a href="https://pypi.org/project/trajweave/">
