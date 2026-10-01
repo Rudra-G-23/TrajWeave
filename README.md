@@ -1,11 +1,32 @@
 # TrajWeave
 
-![TrajWeave poster](/assets/trajweave-poster.png)
+<img src="assets/trajweave-banner.svg" alt="TrajWeave banner" width="100%">
 
-[![CI](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://pypi.org/project/trajweave/">
+    <img src="https://img.shields.io/pypi/v/trajweave.svg" alt="PyPI version" />
+  </a>
 
-[![PyPI](https://img.shields.io/pypi/v/trajweave.svg)](https://pypi.org/project/trajweave/)
-[![Python versions](https://img.shields.io/pypi/pyversions/trajweave.svg)](https://pypi.org/project/trajweave/)
+  <a href="https://pypi.org/project/trajweave/">
+    <img src="https://img.shields.io/pypi/pyversions/trajweave.svg" alt="Python versions" />
+  </a>
+
+  <a href="https://pypi.org/project/trajweave/">
+    <img src="https://img.shields.io/pypi/status/trajweave.svg" alt="Development status" />
+  </a>
+
+  <a href="https://github.com/Rudra-G-23/TrajWeave/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 License" />
+  </a>
+
+  <a href="https://github.com/Rudra-G-23/TrajWeave">
+    <img src="https://img.shields.io/badge/GitHub-TrajWeave-181717?logo=github" alt="GitHub" />
+
+  <a href="https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml">
+    <img src="https://github.com/Rudra-G-23/TrajWeave/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  </a>
+</p>
 
 TrajWeave is a local-first learning loop for coding-agent work. It imports Codex and Claude Code sessions, turns them into normalized trajectories, extracts evidence-backed experiences, proposes where they belong, and keeps a human in control of review, evaluation, and policy changes.
 
