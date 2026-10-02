@@ -530,7 +530,7 @@ def _make_handler(db_path: Path, verbose: bool) -> type[BaseHTTPRequestHandler]:
 
             if path in ("/", "/index.html"):
                 return self._static("index.html")
-            if path in ("/app.js", "/app.css"):
+            if path in ("/app.js", "/app.css", "/favicon.svg"):
                 return self._static(path.lstrip("/"))
             if path == "/favicon.ico":
                 return self._send(b"", "image/x-icon", 204)

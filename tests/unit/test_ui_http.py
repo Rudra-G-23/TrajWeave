@@ -97,6 +97,10 @@ def test_static_index_served(tmp_path):
         with urllib.request.urlopen(base + "/app.js") as r:
             assert r.status == 200
             assert "javascript" in r.headers["Content-Type"]
+        with urllib.request.urlopen(base + "/favicon.svg") as r:
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/svg+xml"
+            assert b"<svg" in r.read()
 
 
 def test_meta_projects_sessions_detail(tmp_path):
