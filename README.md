@@ -32,7 +32,7 @@
   </a>
 </p>
 
-TrajWeave is a local-first learning loop for coding-agent work. It imports Codex and Claude Code sessions, turns them into normalized trajectories, extracts evidence-backed experiences, proposes where they belong, and keeps a human in control of review, evaluation, and policy changes.
+TrajWeave is a local-first learning loop for coding-agent work. It imports Codex, Claude Code, and OpenCode sessions, turns them into normalized trajectories, extracts evidence-backed experiences, proposes where they belong, and keeps a human in control of review, evaluation, and policy changes.
 
 Nothing is sent to a cloud service. TrajWeave only processes repositories that you explicitly register with `trajweave init`.
 
@@ -80,7 +80,7 @@ Import is idempotent and restart-safe. Original session files stay in their exis
 | --- | --- |
 | `trajweave init [PATH]` | Register a repository for local processing. |
 | `trajweave projects` | List registered repositories. |
-| `trajweave import --all` | Import discovered Codex and Claude sessions. |
+| `trajweave import --all` | Import discovered Codex, Claude Code, and OpenCode sessions. |
 | `trajweave sessions` | List source sessions and import status. |
 | `trajweave trajectories` | List normalized trajectories. |
 | `trajweave show TW-000001` | Inspect one trajectory and its events. |

@@ -4,7 +4,7 @@ Current command surface:
 
     trajweave init [PATH]        - opt a repository in
     trajweave projects           - list registered repositories
-    trajweave import [--all]     - import historical Codex / Claude sessions
+    trajweave import [--all]     - import historical coding-agent sessions
     trajweave sessions           - list discovered source sessions
     trajweave trajectories       - list stored trajectories
     trajweave show TW-000001     - inspect one trajectory
@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from trajweave import __version__
+from trajweave.adapters import ADAPTERS
 from trajweave.config.paths import get_paths
 from trajweave.ingest.importer import Importer
 from trajweave.projects.registry import ProjectRegistry, RepoNotFoundError
@@ -59,10 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_projects.add_argument("--json", action="store_true", help="machine-readable output")
     p_projects.set_defaults(func=cmd_projects)
 
+    import_agents = list(ADAPTERS)
     p_import = sub.add_parser("import", help="import historical agent sessions")
     p_import.add_argument("--all", action="store_true", help="import every known agent (default)")
     p_import.add_argument(
-        "--agent", choices=["codex", "claude"], action="append", dest="agents",
+        "--agent", choices=import_agents, action="append", dest="agents",
         help="restrict to one agent (repeatable)",
     )
     p_import.add_argument("--project", metavar="PATH", help="only import sessions for this repo root")
@@ -71,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.set_defaults(func=cmd_import)
 
     p_sessions = sub.add_parser("sessions", help="list discovered source sessions")
-    p_sessions.add_argument("--agent", choices=["codex", "claude"])
+    p_sessions.add_argument("--agent", choices=import_agents)
     p_sessions.add_argument(
         "--status",
         choices=["imported", "ignored_unregistered", "failed", "skipped", "pending"],
@@ -80,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sessions.set_defaults(func=cmd_sessions)
 
     p_traj = sub.add_parser("trajectories", help="list stored trajectories")
-    p_traj.add_argument("--agent", choices=["codex", "claude"])
+    p_traj.add_argument("--agent", choices=import_agents)
     p_traj.add_argument("--project", metavar="PATH", help="filter by repo root")
     p_traj.add_argument("--limit", type=int, default=50)
     p_traj.add_argument("--json", action="store_true")
@@ -439,7 +441,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  root       : {project.root}")
     print(f"  marker     : {Path(project.root) / '.trajweave' / 'project.json'}")
     print(f"  gitignore  : {Path(project.root) / '.gitignore'} (.trajweave/ ignored)")
-    print("\nThis repository's Codex/Claude sessions will now be imported by 'trajweave import'.")
+    print("\nThis repository's supported coding-agent sessions will now be imported by 'trajweave import'.")
     return 0
 
 
@@ -462,7 +464,7 @@ def cmd_projects(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    agents = args.agents or (["codex", "claude"] if (args.all or not args.agents) else None)
+    agents = args.agents or (list(ADAPTERS) if (args.all or not args.agents) else None)
     with _open_db(args) as db:
         importer = Importer(db)
         stats = importer.run(agents, project_filter=args.project, dry_run=args.dry_run)

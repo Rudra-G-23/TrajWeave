@@ -89,6 +89,10 @@ function relTime(iso) {
   return `${Math.round(s / 86400)} days ago`;
 }
 
+function agentLabel(agent) {
+  return agent === "opencode" ? "OpenCode" : agent[0].toUpperCase() + agent.slice(1);
+}
+
 function statusPill(status) {
   const s = (status || "unknown").toLowerCase();
   return el("span", { class: `pill st-${s}`, text: s.toUpperCase() });
@@ -221,8 +225,12 @@ async function viewProjects(view) {
 
   const cards = el("div", { class: "cards" });
   for (const p of projects) {
+    const agentCounts = Object.entries(p.agent_counts || {}).sort(([a], [b]) => a.localeCompare(b));
+    const agentSummary = agentCounts.length
+      ? agentCounts.map(([agent, count]) => `${agentLabel(agent)} ${count}`).join(" · ")
+      : `Codex ${p.codex_count} · Claude ${p.claude_count}`;
     const sub = `${p.total_sessions} session${p.total_sessions === 1 ? "" : "s"}` +
-      ` · Codex ${p.codex_count} · Claude ${p.claude_count}`;
+      ` · ${agentSummary}`;
     const card = el(
       "a",
       { class: "card", href: `#/sessions?project=${encodeURIComponent(p.id)}` },

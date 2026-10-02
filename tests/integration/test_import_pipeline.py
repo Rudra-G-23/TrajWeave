@@ -29,7 +29,7 @@ def test_end_to_end_init_import_reimport(tmp_path, git_repo):
     make_claude_session(claude_root, str(git_repo))
 
     stats = importer.run()
-    assert stats.discovered == {"codex": 1, "claude": 1}
+    assert stats.discovered == {"codex": 1, "claude": 1, "opencode": 0}
     assert stats.imported == 2
     assert stats.ignored_unregistered == 0
     assert stats.failed == 0

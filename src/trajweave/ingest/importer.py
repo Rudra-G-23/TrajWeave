@@ -24,7 +24,6 @@ from trajweave.projects.git import read_git_info
 from trajweave.projects.registry import ProjectRegistry
 from trajweave.storage.database import Database
 from trajweave.storage.repository import Repository
-from trajweave.utils.hashing import file_sha256
 from trajweave.utils.logging import get_logger
 
 log = get_logger("ingest.importer")
@@ -134,8 +133,8 @@ class Importer:
         path = str(session.path)
 
         try:
-            content_hash = file_sha256(path)
-        except OSError as exc:
+            content_hash = adapter.source_hash(session)
+        except Exception as exc:  # noqa: BLE001 - one unreadable source must not stop import
             stats.failures.append((agent, path, f"unreadable: {exc}"))
             stats.record(ImportOutcome.FAILED)
             return ImportOutcome.FAILED

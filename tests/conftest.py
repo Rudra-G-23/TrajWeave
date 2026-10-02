@@ -18,6 +18,7 @@ def _isolated_home(tmp_path, monkeypatch):
     for variable, name in (
         ("TRAJWEAVE_CODEX_ROOT", "codex-sessions"),
         ("TRAJWEAVE_CLAUDE_ROOT", "claude-projects"),
+        ("TRAJWEAVE_OPENCODE_ROOT", "opencode"),
     ):
         root = tmp_path / name
         root.mkdir()

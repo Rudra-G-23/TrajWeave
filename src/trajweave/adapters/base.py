@@ -16,6 +16,7 @@ from pathlib import Path
 
 from trajweave.models.enums import Agent
 from trajweave.models.trajectory import DiscoveredSession, NormalizedTrajectory
+from trajweave.utils.hashing import file_sha256
 from trajweave.utils.logging import get_logger
 
 log = get_logger("adapters")
@@ -94,6 +95,11 @@ class BaseAdapter(ABC):
     # -- parsing --------------------------------------------------------
     def can_parse(self, session: DiscoveredSession) -> bool:
         return session.agent == self.agent and Path(session.path).is_file()
+
+    def source_hash(self, session: DiscoveredSession) -> str:
+        """Return a stable fingerprint for one discovered session."""
+
+        return file_sha256(session.path)
 
     @abstractmethod
     def parse(

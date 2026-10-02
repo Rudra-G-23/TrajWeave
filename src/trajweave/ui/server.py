@@ -166,6 +166,15 @@ def _project_row(row: sqlite3.Row) -> dict[str, Any]:
     d["enabled"] = bool(d.get("enabled"))
     for k in ("total_sessions", "codex_count", "claude_count"):
         d[k] = int(d.get(k) or 0)
+    try:
+        agent_counts = json.loads(d.pop("agent_counts_json", "{}"))
+    except (TypeError, ValueError):
+        agent_counts = {}
+    d["agent_counts"] = {
+        str(agent): int(count)
+        for agent, count in agent_counts.items()
+        if isinstance(count, (int, float))
+    }
     return d
 
 

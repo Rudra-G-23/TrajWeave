@@ -93,6 +93,7 @@ def test_project_summaries_aggregate(tmp_path):
         assert rows["p_a"]["total_sessions"] == 2
         assert rows["p_a"]["codex_count"] == 1
         assert rows["p_a"]["claude_count"] == 1
+        assert rows["p_a"]["agent_counts_json"] == '{"claude":1,"codex":1}'
         assert rows["p_b"]["total_sessions"] == 1
         assert rows["p_a"]["last_activity"] == "2026-09-01T10:00:00+00:00"
 

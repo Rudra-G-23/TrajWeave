@@ -19,6 +19,7 @@ class StrEnum(str, Enum):
 class Agent(StrEnum):
     CODEX = "codex"
     CLAUDE = "claude"
+    OPENCODE = "opencode"
 
 
 class TaskSource(StrEnum):

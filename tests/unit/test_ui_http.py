@@ -117,6 +117,7 @@ def test_meta_projects_sessions_detail(tmp_path):
 
         _, one = get(base, "/api/projects/p1")
         assert one["project"]["codex_count"] == 1
+        assert one["project"]["agent_counts"] == {"codex": 1}
 
         _, sess = get(base, "/api/sessions")
         assert sess["total"] == 1
@@ -132,6 +133,30 @@ def test_meta_projects_sessions_detail(tmp_path):
         assert det["events"][1]["metadata"]["command_kind"] == "test"
         assert det["files"][0]["path"] == "app/billing.py"
         assert det["files"][0]["was_modified"] is True
+
+
+def test_project_agent_counts_include_new_harnesses(tmp_path):
+    db = Database(tmp_path / "tw.db")
+    repo = Repository(db)
+    repo.upsert_project(project_id="p1", name="repo-a", root="/repos/a", git_remote=None)
+    source = SourceSessionRef(Agent.OPENCODE, "ses_one", "/x/opencode.db", "h", 0.0, 1)
+    source_pk = repo.record_source_session(
+        agent="opencode", source_session_id="ses_one", source_path=source.source_path,
+        source_hash=source.source_hash, source_mtime=0.0, size_bytes=1, project_id="p1",
+        status="imported", detail=None, cwd="/repos/a", imported=True,
+    )
+    traj = NormalizedTrajectory(
+        agent=Agent.OPENCODE,
+        source=source,
+        task="repair the OpenCode adapter",
+        final_status=FinalStatus.SUCCESS,
+    )
+    repo.persist_trajectory(traj, source_pk=source_pk, project_id="p1")
+    db.close()
+
+    with running(tmp_path / "tw.db") as base:
+        _, projects = get(base, "/api/projects")
+        assert projects["projects"][0]["agent_counts"] == {"opencode": 1}
 
 
 def test_404s(tmp_path):
